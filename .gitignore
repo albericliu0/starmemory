@@ -18,3 +18,4 @@ native/build/Release/*
 # NOTE: dist/ and the two .node addons are deliberately committed. A marketplace
 # install is a git clone, so anything not in git is simply absent at runtime, and
 # building the C++ addon needs ~2.3 GB of vendored sources plus two toolchains.
+build-pkg/
