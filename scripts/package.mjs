@@ -6,7 +6,7 @@
 // faiss/tenann tree, or the 1.7 GB Rust target dir. Installing from a local
 // *directory* copies the tree verbatim and ignores .gitignore, which is how a
 // 24 MB plugin turns into a 3 GB one.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,11 +27,11 @@ if (run('git', ['status', '--porcelain']).toString().trim()) {
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(stageDir, { recursive: true });
 
-const tar = run('git', ['archive', '--format=tar', 'HEAD']);
-execFileSync('tar', ['-x', '-C', stageDir], { input: tar });
+// A shell pipeline rather than passing a multi-megabyte Buffer through Node.
+execSync(`git archive --format=tar HEAD | tar -x -C "${stageDir}"`, { cwd: root, stdio: 'pipe' });
 
 const zipPath = path.join(outDir, 'starmemory.zip');
-execFileSync('zip', ['-qr', zipPath, 'starmemory'], { cwd: outDir });
+execFileSync('zip', ['-qr', zipPath, 'starmemory'], { cwd: outDir, stdio: 'pipe' });
 
 const kb = (p) => Number(run('du', ['-sk', p]).toString().split(/\s+/)[0]);
 const mb = (n) => `${(n / 1024).toFixed(1)} MB`;
