@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "starmemory": {
+      "command": "node",
+      "args": ["./cli/mcp-server.mjs"],
+      "cwd": ".",
+      "env_vars": [
+        "STARMEMORY_DB_PATH",
+        "STARMEMORY_INDEX_PATH",
+        "STARMEMORY_TEXT_INDEX_PATH"
+      ]
+    }
+  }
+}
