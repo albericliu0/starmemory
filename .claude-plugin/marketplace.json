@@ -1,0 +1,19 @@
+{
+  "name": "starmemory-marketplace",
+  "owner": {
+    "name": "Wei Liu",
+    "email": "wei.liu@phoenixdata.ai"
+  },
+  "metadata": {
+    "description": "Hybrid BM25 + vector recall for Claude Code conversations",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "starmemory",
+      "source": "./",
+      "description": "Hybrid recall for Claude Code conversations: Tantivy BM25 + faiss HNSW over LMDB, fused by reciprocal rank. Prebuilt for darwin-arm64.",
+      "version": "0.1.0"
+    }
+  ]
+}
