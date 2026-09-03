@@ -1,0 +1,31 @@
+{
+  "name": "starmemory",
+  "version": "0.1.0",
+  "description": "Hybrid recall for Claude Code conversations: Tantivy BM25 + faiss HNSW over LMDB, fused by reciprocal rank. Finds Chinese conversations the English-only embedding model cannot.",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "search",
+    "conversations",
+    "semantic-search",
+    "bm25",
+    "tantivy",
+    "lmdb",
+    "faiss",
+    "hnsw",
+    "hybrid-search"
+  ],
+  "mcpServers": {
+    "starmemory": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/cli/mcp-server.mjs"
+      ],
+      "env": {}
+    }
+  },
+  "author": {
+    "name": "Wei Liu",
+    "email": "wei.liu@phoenixdata.ai"
+  }
+}
