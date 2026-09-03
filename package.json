@@ -11,7 +11,8 @@
     "build": "npm run build:native && tsc -p tsconfig.json",
     "test": "npm run test:native && vitest run",
     "build:native": "cd native-text && PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --release && cp \"target/release/libstarmemory_text.$(uname | grep -q Darwin && echo dylib || echo so)\" starmemory_text.node",
-    "test:native": "cd native-text && PATH=\"$HOME/.cargo/bin:$PATH\" cargo test"
+    "test:native": "cd native-text && PATH=\"$HOME/.cargo/bin:$PATH\" cargo test",
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
