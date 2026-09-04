@@ -122,3 +122,104 @@ impl TextIndex {
 pub fn index_version() -> u32 {
     INDEX_VERSION
 }
+
+// ---------------------------------------------------------------------------
+// Vector search
+// ---------------------------------------------------------------------------
+
+use crate::vector::{VectorIndex, VectorOptions, VECTOR_INDEX_VERSION};
+
+#[napi(object)]
+pub struct VectorOptionsJs {
+    pub dim: u32,
+    /// HNSW's M.
+    pub connectivity: u32,
+    pub expansion_add: u32,
+    pub expansion_search: u32,
+}
+
+impl From<&VectorOptionsJs> for VectorOptions {
+    fn from(o: &VectorOptionsJs) -> Self {
+        VectorOptions {
+            dim: o.dim as usize,
+            connectivity: o.connectivity as usize,
+            expansion_add: o.expansion_add as usize,
+            expansion_search: o.expansion_search as usize,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct VectorHit {
+    /// The LMDB exchange id. A JS number, so ids stay plain integers on the
+    /// TypeScript side rather than BigInt.
+    pub id: f64,
+    /// Cosine similarity, higher is better.
+    pub score: f64,
+}
+
+/// Build the graph from every vector and write it to `path`.
+#[napi]
+pub fn build_vector_index(
+    options: VectorOptionsJs,
+    ids: Float64Array,
+    vectors: Float32Array,
+    path: String,
+) -> Result<()> {
+    let ids: Vec<u64> = ids.as_ref().iter().map(|&v| v as u64).collect();
+    VectorIndex::build(
+        (&options).into(),
+        &ids,
+        vectors.as_ref(),
+        std::path::Path::new(&path),
+    )
+    .map_err(to_js)
+}
+
+#[napi]
+pub struct VectorSearcher {
+    index: VectorIndex,
+}
+
+#[napi]
+impl VectorSearcher {
+    #[napi(factory)]
+    pub fn open(options: VectorOptionsJs, path: String) -> Result<Self> {
+        let index = VectorIndex::open((&options).into(), std::path::Path::new(&path))
+            .map_err(to_js)?;
+        Ok(Self { index })
+    }
+
+    /// `filter_ids` restricts the traversal itself, so a filtered query does not
+    /// over-fetch and trim.
+    #[napi]
+    pub fn search(
+        &self,
+        query: Float32Array,
+        limit: u32,
+        filter_ids: Option<Float64Array>,
+    ) -> Result<Vec<VectorHit>> {
+        let allowed: Option<Vec<u64>> =
+            filter_ids.map(|ids| ids.as_ref().iter().map(|&v| v as u64).collect());
+
+        let hits = self
+            .index
+            .search(query.as_ref(), limit as usize, allowed.as_deref())
+            .map_err(to_js)?;
+
+        Ok(hits
+            .into_iter()
+            .map(|h| VectorHit { id: h.id as f64, score: h.score as f64 })
+            .collect())
+    }
+
+    #[napi]
+    pub fn len(&self) -> u32 {
+        self.index.len() as u32
+    }
+}
+
+#[napi]
+pub fn vector_index_version() -> u32 {
+    VECTOR_INDEX_VERSION
+}

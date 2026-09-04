@@ -64,25 +64,18 @@ describe('findMissingDeps', () => {
 });
 
 describe('findMissingAddons', () => {
-  const BOTH = [
-    'native/build/Release/starmemory_native.node',
-    'native-text/starmemory_text.node',
-  ];
+  // One addon now: tantivy BM25 and usearch HNSW live in the same Rust crate,
+  // replacing the separate vendored C++ faiss/tenann module.
+  const ADDON = 'native/starmemory_native.node';
 
-  it('reports both native addons when neither has been built', () => {
-    expect(findMissingAddons(root)).toEqual(BOTH);
+  it('reports the addon when it has not been built', () => {
+    expect(findMissingAddons(root)).toEqual([ADDON]);
   });
 
-  it('reports nothing once both are present', () => {
-    for (const relative of BOTH) writeAddon(relative);
+  it('reports nothing once it is present', () => {
+    writeAddon(ADDON);
 
     expect(findMissingAddons(root)).toEqual([]);
-  });
-
-  it('reports the one that is missing', () => {
-    writeAddon(BOTH[0]);
-
-    expect(findMissingAddons(root)).toEqual([BOTH[1]]);
   });
 });
 

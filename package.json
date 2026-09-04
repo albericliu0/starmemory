@@ -1,7 +1,7 @@
 {
   "name": "starmemory",
   "version": "0.1.0",
-  "description": "Enterprise memory plugin for Claude Code: LMDB + faiss HNSW (via tenann) + Tantivy BM25 hybrid local recall, with optional sync to a central StarRocks store.",
+  "description": "Hybrid recall plugin for Claude Code: Tantivy BM25 + usearch HNSW over LMDB, fused by reciprocal rank. One Rust addon, no C++ toolchain.",
   "private": true,
   "type": "module",
   "bin": {
@@ -10,8 +10,8 @@
   "scripts": {
     "build": "npm run build:native && tsc -p tsconfig.json",
     "test": "npm run test:native && vitest run",
-    "build:native": "cd native-text && PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --release && cp \"target/release/libstarmemory_text.$(uname | grep -q Darwin && echo dylib || echo so)\" starmemory_text.node",
-    "test:native": "cd native-text && PATH=\"$HOME/.cargo/bin:$PATH\" cargo test",
+    "build:native": "cd native && PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --release && cp \"target/release/libstarmemory_native.$(uname | grep -q Darwin && echo dylib || echo so)\" starmemory_native.node",
+    "test:native": "cd native && PATH=\"$HOME/.cargo/bin:$PATH\" cargo test",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
@@ -23,9 +23,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.0.0",
-    "node-addon-api": "^8.0.0",
-    "node-gyp": "^11.0.0"
+    "vitest": "^2.0.0"
   },
   "os": [
     "darwin"

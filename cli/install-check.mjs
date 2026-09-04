@@ -16,13 +16,10 @@ export const RUNTIME_DEPENDENCIES = Object.freeze([
   'zod',
 ]);
 
-/** Compiled addons, relative to the plugin root. This build ships them
- * prebuilt for darwin-arm64 rather than compiling on the user's machine:
- * the C++ one needs an 821 MB vendored faiss/tenann tree to build. */
-export const NATIVE_ADDONS = Object.freeze([
-  'native/build/Release/starmemory_native.node',
-  'native-text/starmemory_text.node',
-]);
+/** The compiled addon, relative to the plugin root. Tantivy BM25 and usearch
+ * HNSW live in one Rust crate, so there is exactly one file. It ships prebuilt
+ * for darwin-arm64 rather than being compiled on the user's machine. */
+export const NATIVE_ADDONS = Object.freeze(['native/starmemory_native.node']);
 
 /** The one platform this release carries binaries for. */
 export const SUPPORTED_PLATFORM = Object.freeze({ os: 'darwin', cpu: 'arm64' });

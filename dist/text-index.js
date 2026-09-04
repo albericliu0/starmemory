@@ -1,31 +1,14 @@
-// TypeScript face of the Tantivy BM25 addon -- design doc §08.
+// TypeScript face of the Tantivy BM25 half of the addon -- design doc §08.
 //
 // The addon is deliberately ignorant of our record shape, so this file owns the
 // translation: an exchange becomes one indexed document, and ISO timestamps
 // become the epoch milliseconds the native range filter works in.
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-const require = createRequire(import.meta.url);
-const here = path.dirname(fileURLToPath(import.meta.url));
-/** Built from source by `npm run build:native`; `dist/` and `src/` sit at the
- * same depth relative to the crate, so one relative path serves both. */
-const ADDON_PATH = path.resolve(here, '..', 'native-text', 'starmemory_text.node');
-let cachedModule = null;
-function addon() {
-    if (!cachedModule) {
-        if (!fs.existsSync(ADDON_PATH)) {
-            throw new Error(`starmemory text index addon not found at ${ADDON_PATH} -- run "npm run build:native"`);
-        }
-        cachedModule = require(ADDON_PATH);
-    }
-    return cachedModule;
-}
+import { addon, isAddonAvailable } from './addon.js';
 /** True when the addon has been built. Callers that can still work without BM25
  * (see store.ts's substring fallback) use this instead of catching a throw. */
 export function isTextIndexAvailable() {
-    return fs.existsSync(ADDON_PATH);
+    return isAddonAvailable();
 }
 /** One exchange, flattened into the single text field the schema indexes.
  * Both sides go in: people search for what the assistant said at least as often

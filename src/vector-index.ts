@@ -1,50 +1,42 @@
-// Wraps the native HNSW addon -- design doc §07. The index file is a rebuildable
-// cache, not source of truth (that's `vectors` in store.ts): on open(), load the
-// on-disk index if present, otherwise rebuild it from every vector in LMDB.
-import { createRequire } from 'node:module';
+// HNSW vector search -- design doc §07.
+//
+// Backed by usearch inside the single Rust addon. The index file is a
+// rebuildable cache, not source of truth: that is `vectors` in store.ts. On
+// open() we load the file if it is there and usable, otherwise we rebuild from
+// every vector in LMDB.
 import fs from 'node:fs';
 import { EMBEDDING_DIM } from './embeddings.js';
 import { allVectors, type StoreHandle } from './store.js';
-
-const require = createRequire(import.meta.url);
-const native = require('../native/build/Release/starmemory_native.node') as {
-  buildHnswIndex(
-    options: HnswOptions,
-    vectors: Float32Array,
-    ids: BigInt64Array,
-    outputPath: string
-  ): void;
-  HnswSearcher: new (
-    options: HnswOptions,
-    indexPath: string
-  ) => { search(query: Float32Array, k: number, filterIds?: BigInt64Array): SearchResultRaw };
-};
+import { addon, type NativeVectorOptions, type NativeVectorSearcher } from './addon.js';
 
 export interface HnswOptions {
   dim: number;
-  metric: 'l2' | 'cosine' | 'inner_product' | 'cosine_distance';
-  isVectorNormed?: boolean;
-  M?: number;
-  efConstruction?: number;
-  efSearch?: number;
+  /** HNSW's M: graph connectivity. */
+  connectivity: number;
+  expansionAdd: number;
+  expansionSearch: number;
 }
 
-interface SearchResultRaw {
-  ids: BigInt64Array;
-  distances: Float32Array;
-}
-
+/** Unchanged from the faiss build, so recall stays comparable. Embeddings are
+ * already L2-normalised, so the engine's inner product is cosine similarity. */
 const DEFAULT_OPTIONS: HnswOptions = {
   dim: EMBEDDING_DIM,
-  metric: 'inner_product', // embeddings are already L2-normalized, so IP == cosine
-  isVectorNormed: true,
-  M: 16,
-  efConstruction: 40,
-  efSearch: 64,
+  connectivity: 16,
+  expansionAdd: 40,
+  expansionSearch: 64,
 };
 
+function toNative(options: HnswOptions): NativeVectorOptions {
+  return {
+    dim: options.dim,
+    connectivity: options.connectivity,
+    expansionAdd: options.expansionAdd,
+    expansionSearch: options.expansionSearch,
+  };
+}
+
 export class VectorIndex {
-  private searcher: InstanceType<typeof native.HnswSearcher> | null = null;
+  private searcher: NativeVectorSearcher | null = null;
 
   private constructor(
     private readonly indexPath: string,
@@ -56,51 +48,52 @@ export class VectorIndex {
     const index = new VectorIndex(indexPath, opts);
     if (fs.existsSync(indexPath)) {
       try {
-        index.searcher = new native.HnswSearcher(opts, indexPath);
+        index.searcher = addon().VectorSearcher.open(toNative(opts), indexPath);
         return index;
       } catch {
-        // fall through to rebuild -- e.g. index file from an incompatible tenann version
+        // An index file from an incompatible version. It is a cache, so drop it.
       }
     }
     index.rebuild(store);
     return index;
   }
 
-  /** Rebuild the whole graph from every vector currently in LMDB (design doc §07:
-   * "几万条向量构图是秒级操作, 不是需要焦虑的成本"). Call after a sync batch. */
+  /** Rebuild the whole graph from every vector currently in LMDB.
+   *
+   * Wholesale rather than incremental on purpose (design doc §07): inserting
+   * into an HNSW graph degrades it, and at this corpus size a full rebuild is a
+   * sub-second operation. Subagent turns never appear here because store.ts
+   * gives them no vector. */
   rebuild(store: StoreHandle): void {
     const ids: number[] = [];
-    const vecs: number[] = [];
+    const chunks: Float32Array[] = [];
     for (const { id, vector } of allVectors(store, this.options.dim)) {
       ids.push(id);
-      vecs.push(...vector);
+      chunks.push(vector);
     }
-    if (ids.length === 0) {
-      this.searcher = null;
-      return;
-    }
-    native.buildHnswIndex(
-      this.options,
-      Float32Array.from(vecs),
-      BigInt64Array.from(ids.map(BigInt)),
-      this.indexPath
-    );
-    this.searcher = new native.HnswSearcher(this.options, this.indexPath);
+
+    const flat = new Float32Array(ids.length * this.options.dim);
+    chunks.forEach((vector, i) => flat.set(vector, i * this.options.dim));
+
+    addon().buildVectorIndex(toNative(this.options), Float64Array.from(ids), flat, this.indexPath);
+    this.searcher = addon().VectorSearcher.open(toNative(this.options), this.indexPath);
   }
 
-  /** Top-k search, optionally restricted to `filterIds` via tenann's ArrayIdFilter
-   * (design doc §07/§08 -- no post-hoc over-fetch-and-trim). */
+  /** Top-k by cosine similarity, optionally restricted to `filterIds`.
+   *
+   * The filter runs inside the graph traversal, so a filtered query does not
+   * over-fetch and trim (design doc §07/§08). */
   search(query: Float32Array, k: number, filterIds?: number[]): { id: number; score: number }[] {
     if (!this.searcher) return [];
-    const raw = this.searcher.search(
+    return this.searcher.search(
       query,
       k,
-      filterIds ? BigInt64Array.from(filterIds.map(BigInt)) : undefined
+      filterIds ? Float64Array.from(filterIds) : null
     );
-    const out: { id: number; score: number }[] = [];
-    for (let i = 0; i < raw.ids.length; i++) {
-      out.push({ id: Number(raw.ids[i]), score: raw.distances[i] });
-    }
-    return out;
+  }
+
+  /** Vectors currently in the graph. */
+  size(): number {
+    return this.searcher ? this.searcher.len() : 0;
   }
 }

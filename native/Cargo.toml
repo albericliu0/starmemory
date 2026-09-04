@@ -1,5 +1,5 @@
 [package]
-name = "starmemory-text"
+name = "starmemory-native"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -10,6 +10,7 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 tantivy = "0.26"
 tantivy-jieba = "0.20"
+usearch = "2.26"
 napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"
 

@@ -1,21 +1,14 @@
 node_modules/
-native/node_modules/
 *.log
 .DS_Store
 .data/
-
-# Build inputs, far too large to ship: vendor-tenann is 821 MB and the Rust
-# target dir is 1.5 GB. A source build fetches them separately (see BUILDING.md).
-vendor-tenann/
-native-text/target/
-
-# node-gyp intermediates. The finished addon itself IS committed, see below.
-native/build/*
-!native/build/Release/
-native/build/Release/*
-!native/build/Release/starmemory_native.node
-
-# NOTE: dist/ and the two .node addons are deliberately committed. A marketplace
-# install is a git clone, so anything not in git is simply absent at runtime, and
-# building the C++ addon needs ~2.3 GB of vendored sources plus two toolchains.
 build-pkg/
+
+# Build inputs, far too large to ship.
+native/target/
+# The old C++ addon's 821 MB vendored faiss/tenann tree. Nothing builds against
+# it any more; it is kept on disk only so the migration can be reverted.
+vendor-tenann/
+
+# NOTE: dist/ and native/starmemory_native.node are deliberately committed. A
+# marketplace install is a git clone, so anything not in git is absent at runtime.

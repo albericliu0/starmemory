@@ -1,12 +1,5 @@
+import { type NativeTextDoc } from './addon.js';
 import type { ConversationExchange } from './types.js';
-interface NativeDoc {
-    id: number;
-    text: string;
-    project: string;
-    sessionId: string;
-    timestampMs: number;
-    isSidechain: boolean;
-}
 /** True when the addon has been built. Callers that can still work without BM25
  * (see store.ts's substring fallback) use this instead of catching a throw. */
 export declare function isTextIndexAvailable(): boolean;
@@ -24,7 +17,7 @@ export interface TextHit {
 /** One exchange, flattened into the single text field the schema indexes.
  * Both sides go in: people search for what the assistant said at least as often
  * as for what they asked. */
-export declare function documentForExchange(exchange: ConversationExchange): NativeDoc;
+export declare function documentForExchange(exchange: ConversationExchange): NativeTextDoc;
 export declare class TextIndex {
     private readonly native;
     readonly directory: string;
@@ -43,4 +36,3 @@ export declare class TextIndex {
     search(query: string, limit: number, filter?: TextSearchFilter): TextHit[];
     numDocs(): number;
 }
-export {};
