@@ -8,8 +8,10 @@
 //! write transaction as the inserts, and LMDB serialises write transactions
 //! across processes, so the second one sees the advanced cursor and skips.
 
+use std::collections::HashMap;
 use std::ops::Bound;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use heed::byteorder::BigEndian;
 use heed::types::{Bytes, Str, Unit, U64};
@@ -21,6 +23,48 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 const MAP_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
 type IdKey = U64<BigEndian>;
+
+/// LMDB permits one environment per process per path, and heed enforces it by
+/// returning `EnvAlreadyOpened` on a second open. Opening the same store twice
+/// in one process is legitimate, though -- most obviously a handle that is only
+/// waiting for the JavaScript garbage collector. So every open goes through this
+/// registry and shares the live environment if there is one. The `Weak` means
+/// the registry never keeps an environment alive on its own: when the last
+/// handle drops, heed closes it and the next open starts fresh.
+fn registry() -> &'static Mutex<HashMap<PathBuf, Weak<Env>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<Env>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn shared_env(path: &Path) -> Result<Arc<Env>> {
+    std::fs::create_dir_all(path)?;
+    let key = path.canonicalize()?;
+    let mut map = registry().lock().map_err(|_| "environment registry poisoned")?;
+    if let Some(env) = map.get(&key).and_then(Weak::upgrade) {
+        return Ok(env);
+    }
+    map.retain(|_, weak| weak.strong_count() > 0);
+
+    // The last handle may be mid-drop on another thread: our upgrade failed but
+    // heed has not finished releasing the path. Give it a few chances.
+    let mut attempt = 0;
+    let env = loop {
+        // SAFETY: heed marks open unsafe because a memory-mapped file must not
+        // be truncated or written by anything but LMDB while mapped. Nothing
+        // else touches this directory.
+        match unsafe { EnvOpenOptions::new().map_size(MAP_SIZE).max_dbs(8).open(&key) } {
+            Ok(env) => break env,
+            Err(heed::Error::EnvAlreadyOpened) if attempt < 50 => {
+                attempt += 1;
+                std::thread::yield_now();
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let env = Arc::new(env);
+    map.insert(key, Arc::downgrade(&env));
+    Ok(env)
+}
 
 /// One exchange to insert. `json` is the record as the TypeScript side
 /// serialises it, minus `id`; the store assigns the id and writes it in.
@@ -54,7 +98,7 @@ pub struct IdFilter {
 }
 
 pub struct Store {
-    env: Env,
+    env: Arc<Env>,
     exchanges: Database<IdKey, Str>,
     vectors: Database<IdKey, Bytes>,
     idx_project: Database<Bytes, Unit>,
@@ -103,11 +147,9 @@ impl Store {
             )
             .into());
         }
-        std::fs::create_dir_all(path)?;
-        // SAFETY: heed marks open unsafe because a memory-mapped file must not be
-        // truncated or written by anything but LMDB while mapped. Nothing else
-        // touches this directory.
-        let env = unsafe { EnvOpenOptions::new().map_size(MAP_SIZE).max_dbs(8).open(path)? };
+        let env = shared_env(path)?;
+        // create_database returns the existing handle when the named database is
+        // already there, so every Store on a shared environment sees the same six.
         let mut wtxn = env.write_txn()?;
         let exchanges = env.create_database(&mut wtxn, Some("exchanges"))?;
         let vectors = env.create_database(&mut wtxn, Some("vectors"))?;
@@ -410,10 +452,54 @@ mod tests {
         assert!(!store.meta_remove("k").unwrap());
     }
 
-    // There is deliberately no "two handles on one path" test here: LMDB allows
-    // one environment per process per path (heed returns EnvAlreadyOpened), so
-    // that scenario can only be exercised with two real processes. The CLI race
-    // test in the TypeScript suite does exactly that.
+    #[test]
+    fn two_handles_on_one_path_share_the_environment() {
+        // LMDB allows one environment per process per path; heed enforces it
+        // with EnvAlreadyOpened. A second Store::open on the same path must
+        // therefore share the first one's environment rather than fail --
+        // otherwise a handle that is merely awaiting garbage collection blocks
+        // every later open in the process.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("store.mdb");
+        let a = Store::open(&path).unwrap();
+        let b = Store::open(&path).unwrap();
+        let key = "synced_line_end:/tmp/a.jsonl";
+
+        a.insert(&[row(1), row(2)], Some(key)).unwrap();
+        let second = b.insert(&[row(1), row(2)], Some(key)).unwrap();
+
+        assert_eq!(second.skipped, 2, "the shared environment serialises the two inserts");
+        assert_eq!(b.next_id().unwrap(), 2);
+    }
+
+    #[test]
+    fn dropping_one_handle_leaves_the_other_working() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("store.mdb");
+        let a = Store::open(&path).unwrap();
+        let b = Store::open(&path).unwrap();
+        drop(a);
+
+        b.insert(&[row(1)], None).unwrap();
+
+        assert_eq!(b.next_id().unwrap(), 1);
+    }
+
+    #[test]
+    fn once_every_handle_is_gone_the_path_can_be_opened_fresh() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("store.mdb");
+        {
+            let a = Store::open(&path).unwrap();
+            let _b = Store::open(&path).unwrap();
+            a.insert(&[row(1)], None).unwrap();
+        }
+
+        let again = Store::open(&path).unwrap();
+
+        assert_eq!(again.next_id().unwrap(), 1, "data persisted and the env was really released");
+    }
+
     #[test]
     fn a_replayed_batch_is_skipped_by_the_cursor_instead_of_duplicated() {
         // The race that produced 230 rows for 132 exchanges: two syncs both read
