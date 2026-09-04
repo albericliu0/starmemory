@@ -23,8 +23,8 @@ beforeAll(async () => {
 
 describe('embedding model', () => {
   it('names the model and dimension it was built for, so a store can tell when they change', () => {
-    expect(EMBEDDING_MODEL).toMatch(/bge-m3/);
-    expect(EMBEDDING_DIM).toBe(1024);
+    expect(EMBEDDING_MODEL).toMatch(/jina-embeddings-v2-base-zh/);
+    expect(EMBEDDING_DIM).toBe(768);
   });
 
   it('produces unit vectors of the declared dimension', async () => {
