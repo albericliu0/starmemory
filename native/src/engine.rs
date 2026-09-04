@@ -209,10 +209,16 @@ impl TextEngine {
         }
     }
 
+    /// Idempotent: adding an id that is already indexed replaces it. sync commits
+    /// the index and then advances a cursor in LMDB; a crash between the two
+    /// replays the batch, and a replay must not double the index (design doc
+    /// §17 item 1). tantivy applies a delete only to documents added before it,
+    /// so delete-then-add in one commit is exactly "replace".
     pub fn add_documents(&mut self, docs: &[Doc]) -> Result<()> {
         let fields = self.fields;
         let writer = self.writer.as_mut().ok_or(NO_WRITER)?;
         for d in docs {
+            writer.delete_term(Term::from_field_u64(fields.id, d.id));
             let mut doc = TantivyDocument::new();
             doc.add_u64(fields.id, d.id);
             doc.add_text(fields.text, &d.text);
@@ -486,6 +492,31 @@ mod tests {
         let hits = engine.search("compaction failed", 10, &Filter::default()).unwrap();
 
         assert_eq!(ids(&hits)[0], 9);
+    }
+
+    #[test]
+    fn adding_the_same_id_twice_keeps_one_document() {
+        // sync writes the index, commits, then advances a cursor in LMDB. A crash
+        // between those two steps replays the batch on the next run. The replay
+        // must be a no-op, not a duplicate -- design doc §17 item 1.
+        let (_d, mut engine) = engine_with(&[doc(7, "the same exchange")]);
+
+        engine.add_documents(&[doc(7, "the same exchange")]).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.num_docs().unwrap(), 1);
+        assert_eq!(ids(&engine.search("exchange", 10, &Filter::default()).unwrap()), vec![7]);
+    }
+
+    #[test]
+    fn re_adding_an_id_replaces_its_text() {
+        let (_d, mut engine) = engine_with(&[doc(7, "old wording about compaction")]);
+
+        engine.add_documents(&[doc(7, "new wording about tokenizers")]).unwrap();
+        engine.commit().unwrap();
+
+        assert!(engine.search("compaction", 10, &Filter::default()).unwrap().is_empty());
+        assert_eq!(ids(&engine.search("tokenizers", 10, &Filter::default()).unwrap()), vec![7]);
     }
 
     #[test]

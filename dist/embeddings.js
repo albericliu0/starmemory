@@ -1,23 +1,24 @@
-// Embedding pipeline -- design doc §06, revised to a multilingual model.
+// Embedding pipeline -- design doc §06, revised to a bilingual model.
 //
 // The original bge-small-en-v1.5 was English-only: on a 10-topic ranking test a
-// Chinese query found its Chinese answer 40% of the time and crossed languages
-// 30-50% of the time. bge-m3 scored 80% in all four directions (zh→zh, en→en,
-// zh→en, en→zh) and was the only candidate that did not regress English. It
-// costs 561 MB on disk, ~350 MB more RSS, and 60 ms per long passage vs 13 ms.
-// multilingual-e5-small was the runner-up: same 384 dims as before and 129 MB,
-// but English dropped from 80% to 60%.
+// Chinese query found its Chinese answer 40% of the time. bge-m3 fixed that but
+// costs 1.35 GB of RSS per process, because its 250k-row XLM-R vocabulary is
+// dequantised to fp32 at load -- and a memory plugin holds one process per
+// Claude Code session. jina-embeddings-v2-base-zh is trained for exactly
+// Chinese + English with a 61k vocabulary: 493 MB RSS, 156 MB on disk, and on
+// the same test 80/70/80/80 (zh→zh, en→en, zh→en, en→zh) against bge-m3's
+// 80/80/80/80 -- one query apart. Apache-2.0. Design doc §18/§19 has the numbers.
 import { pipeline, env } from '@huggingface/transformers';
 env.allowLocalModels = true;
 env.useBrowserCache = false;
-const MODEL_ID = 'Xenova/bge-m3';
+const MODEL_ID = 'Xenova/jina-embeddings-v2-base-zh';
 const MODEL_DTYPE = 'q8';
-export const EMBEDDING_DIM = 1024;
+export const EMBEDDING_DIM = 768;
 /** Identity of the model every stored vector came from. A store whose recorded
  * model differs from this is re-embedded in full before it is searched: vectors
  * from two models are not comparable, and here they are not even the same size. */
 export const EMBEDDING_MODEL = `${MODEL_ID}/${MODEL_DTYPE}/${EMBEDDING_DIM}`;
-/** bge-m3 is instruction-free: no "query:" or "Represent this sentence" prefix
+/** jina-v2 is instruction-free: no "query:" or "Represent this sentence" prefix
  * on either side, unlike the BGE-v1.5 and E5 families. Kept as a function so the
  * call sites stay symmetric with the passage path. */
 export const BGE_QUERY_PREFIX = '';

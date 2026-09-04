@@ -223,3 +223,158 @@ impl VectorSearcher {
 pub fn vector_index_version() -> u32 {
     VECTOR_INDEX_VERSION
 }
+
+// ---------------------------------------------------------------------------
+// LMDB store
+// ---------------------------------------------------------------------------
+
+use crate::store as db;
+
+#[napi(object)]
+pub struct StoreRow {
+    /// The exchange as JSON, without `id`; the store assigns and writes it in.
+    pub json: String,
+    pub project: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    pub line_end: f64,
+    pub is_sidechain: bool,
+    pub embedding: Option<Float32Array>,
+}
+
+#[napi(object)]
+pub struct InsertResult {
+    pub ids: Vec<f64>,
+    /// Rows already past the cursor when the transaction began -- another sync
+    /// stored them first. Expected under concurrency, not an error.
+    pub skipped: u32,
+}
+
+#[napi(object)]
+pub struct StoreFilter {
+    pub project: Option<String>,
+    pub session_id: Option<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+}
+
+#[napi(object)]
+pub struct VectorDump {
+    pub ids: Float64Array,
+    /// `ids.length * dim` floats, row-major.
+    pub data: Float32Array,
+}
+
+#[napi]
+pub struct StoreHandle {
+    inner: Option<db::Store>,
+}
+
+const STORE_CLOSED: &str = "store is closed";
+
+#[napi]
+impl StoreHandle {
+    #[napi(factory)]
+    pub fn open(path: String) -> Result<Self> {
+        let inner = db::Store::open(std::path::Path::new(&path)).map_err(to_js)?;
+        Ok(Self { inner: Some(inner) })
+    }
+
+    fn store(&self) -> Result<&db::Store> {
+        self.inner.as_ref().ok_or_else(|| Error::from_reason(STORE_CLOSED))
+    }
+
+    /// One write transaction for the whole batch, including the per-file cursor
+    /// check-and-advance. That single transaction is what stops two concurrent
+    /// syncs from inserting the same rows.
+    #[napi]
+    pub fn insert(&self, rows: Vec<StoreRow>, cursor_key: Option<String>) -> Result<InsertResult> {
+        let rows: Vec<db::Row> = rows
+            .into_iter()
+            .map(|r| db::Row {
+                json: r.json,
+                project: r.project,
+                session_id: r.session_id,
+                timestamp: r.timestamp,
+                line_end: r.line_end.max(0.0) as u64,
+                is_sidechain: r.is_sidechain,
+                embedding: r.embedding.map(|e| e.as_ref().to_vec()),
+            })
+            .collect();
+        let out = self.store()?.insert(&rows, cursor_key.as_deref()).map_err(to_js)?;
+        Ok(InsertResult { ids: out.ids.into_iter().map(|i| i as f64).collect(), skipped: out.skipped as u32 })
+    }
+
+    #[napi]
+    pub fn get(&self, id: f64) -> Result<Option<String>> {
+        self.store()?.get(id as u64).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn get_vector(&self, id: f64) -> Result<Option<Float32Array>> {
+        Ok(self.store()?.get_vector(id as u64).map_err(to_js)?.map(Float32Array::new))
+    }
+
+    #[napi]
+    pub fn put_vector(&self, id: f64, vector: Float32Array) -> Result<()> {
+        self.store()?.put_vector(id as u64, vector.as_ref()).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn all_vectors(&self, dim: u32) -> Result<VectorDump> {
+        let (ids, data) = self.store()?.all_vectors(dim as usize).map_err(to_js)?;
+        Ok(VectorDump {
+            ids: Float64Array::new(ids.into_iter().map(|i| i as f64).collect()),
+            data: Float32Array::new(data),
+        })
+    }
+
+    /// `null` when no filter was given, so the caller can tell that apart from
+    /// "filter matched nothing".
+    #[napi]
+    pub fn filter_ids(&self, filter: StoreFilter) -> Result<Option<Float64Array>> {
+        let f = db::IdFilter {
+            project: filter.project,
+            session_id: filter.session_id,
+            after: filter.after,
+            before: filter.before,
+        };
+        Ok(self
+            .store()?
+            .filter_ids(&f)
+            .map_err(to_js)?
+            .map(|ids| Float64Array::new(ids.into_iter().map(|i| i as f64).collect())))
+    }
+
+    #[napi]
+    pub fn exchanges_from(&self, from: f64) -> Result<Vec<String>> {
+        self.store()?.exchanges_from(from.max(0.0) as u64).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn next_id(&self) -> Result<f64> {
+        self.store()?.next_id().map(|i| i as f64).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn meta_get(&self, key: String) -> Result<Option<String>> {
+        self.store()?.meta_get(&key).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn meta_put(&self, key: String, value: String) -> Result<()> {
+        self.store()?.meta_put(&key, &value).map_err(to_js)
+    }
+
+    #[napi]
+    pub fn meta_remove(&self, key: String) -> Result<bool> {
+        self.store()?.meta_remove(&key).map_err(to_js)
+    }
+
+    /// Releases the LMDB environment. LMDB allows one open environment per path
+    /// per process, so a test that reopens the same path must close first.
+    #[napi]
+    pub fn close(&mut self) {
+        self.inner.take();
+    }
+}

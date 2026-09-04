@@ -12,7 +12,6 @@ import path from 'node:path';
 export const RUNTIME_DEPENDENCIES = Object.freeze([
   '@huggingface/transformers',
   '@modelcontextprotocol/sdk',
-  'lmdb',
   'zod',
 ]);
 

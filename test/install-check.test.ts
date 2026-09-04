@@ -48,18 +48,18 @@ describe('findMissingDeps', () => {
   });
 
   it('reports only the dependency that is missing', () => {
-    for (const name of RUNTIME_DEPENDENCIES) if (name !== 'lmdb') writePackage(name);
+    for (const name of RUNTIME_DEPENDENCIES) if (name !== 'zod') writePackage(name);
 
-    expect(findMissingDeps(root)).toEqual(['lmdb']);
+    expect(findMissingDeps(root)).toEqual(['zod']);
   });
 
   it('treats a package folder with no manifest as missing', () => {
     // A half-extracted package would slip past a bare existsSync on the folder
     // and then crash the server with ERR_MODULE_NOT_FOUND after handoff.
     for (const name of RUNTIME_DEPENDENCIES) writePackage(name);
-    fs.rmSync(path.join(root, 'node_modules', 'lmdb', 'package.json'));
+    fs.rmSync(path.join(root, 'node_modules', 'zod', 'package.json'));
 
-    expect(findMissingDeps(root)).toEqual(['lmdb']);
+    expect(findMissingDeps(root)).toEqual(['zod']);
   });
 });
 

@@ -58,7 +58,38 @@ export interface NativeVectorSearcher {
   len(): number;
 }
 
+export interface NativeStoreRow {
+  json: string;
+  project: string;
+  sessionId?: string;
+  timestamp: string;
+  lineEnd: number;
+  isSidechain: boolean;
+  embedding?: Float32Array;
+}
+
+export interface NativeInsertResult {
+  ids: number[];
+  skipped: number;
+}
+
+export interface NativeStore {
+  insert(rows: NativeStoreRow[], cursorKey: string | null): NativeInsertResult;
+  get(id: number): string | null;
+  getVector(id: number): Float32Array | null;
+  putVector(id: number, vector: Float32Array): void;
+  allVectors(dim: number): { ids: Float64Array; data: Float32Array };
+  filterIds(filter: { project?: string; sessionId?: string; after?: string; before?: string }): Float64Array | null;
+  exchangesFrom(from: number): string[];
+  nextId(): number;
+  metaGet(key: string): string | null;
+  metaPut(key: string, value: string): void;
+  metaRemove(key: string): boolean;
+  close(): void;
+}
+
 export interface NativeAddon {
+  StoreHandle: { open(path: string): NativeStore };
   TextIndex: { open(path: string): NativeTextIndex };
   indexVersion(): number;
   buildVectorIndex(

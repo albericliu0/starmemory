@@ -1,48 +1,58 @@
-import { type RootDatabase, type Database } from 'lmdb';
+import { type NativeStore } from './addon.js';
 import type { ConversationExchange } from './types.js';
 export interface StoreHandle {
-    root: RootDatabase;
-    exchanges: Database<string, number>;
-    vectors: Database<Buffer, number>;
-    idxProject: Database<null, [string, number]>;
-    idxSession: Database<null, [string, number]>;
-    idxTime: Database<null, [string, number]>;
-    meta: Database<unknown, string>;
+    native: NativeStore;
+    /** Small typed key/value area: cursors and versions. Values are JSON. */
+    meta: {
+        get(key: string): unknown;
+        putSync(key: string, value: unknown): void;
+        remove(key: string): boolean;
+    };
     close(): Promise<void>;
 }
 export declare function openStore(dbPath: string): StoreHandle;
-/** Next id = current max id in `exchanges` + 1 (0 for an empty store). Used
- * both as the primary key and, per design doc §12, as the sync cursor. */
-export declare function nextId(store: StoreHandle): number;
+/** Meta key holding the last transcript line synced for one archive file. Read
+ * and advanced by the Rust store inside the insert transaction. */
+export declare function syncCursorKey(archivePath: string): string;
+/** Insert one exchange with no cursor bookkeeping. For tests and one-off use;
+ * sync goes through insertExchangesForFile. */
 export declare function insertExchange(store: StoreHandle, exchange: Omit<ConversationExchange, 'id'>, embedding: Float32Array | null): number;
+export interface FileInsertResult {
+    ids: number[];
+    /** Rows another sync had already stored by the time this transaction ran. */
+    skipped: number;
+}
+/** Insert a file's new exchanges under its cursor, transactionally. */
+export declare function insertExchangesForFile(store: StoreHandle, archivePath: string, items: {
+    exchange: Omit<ConversationExchange, 'id'>;
+    embedding: Float32Array | null;
+}[]): FileInsertResult;
+export declare function nextId(store: StoreHandle): number;
 export declare function getExchange(store: StoreHandle, id: number): ConversationExchange | undefined;
+/** A vector written by a different embedding model has a different length.
+ * Reading it as the current `dim` would produce garbage, so such rows are
+ * treated as absent until ensureEmbeddingModel() rewrites them. */
 export declare function getVector(store: StoreHandle, id: number, dim: number): Float32Array | undefined;
 export declare function putVector(store: StoreHandle, id: number, embedding: Float32Array): void;
-/** All (id, vector) pairs of the current dimension, for a full index rebuild
+/** Every vector of the current dimension, packed for a graph rebuild
  * (design doc §07). Stale-model vectors are skipped, not misread. */
-export declare function allVectors(store: StoreHandle, dim: number): Generator<{
-    id: number;
-    vector: Float32Array;
-}>;
-/** ids whose exchange matches the given filters (design doc §07's "元数据过滤"
- * -> ArrayIdFilter path). Every clause is answered from a secondary index, so
- * this stays cheap enough to run before the graph traversal rather than after it.
- *
- * Returns undefined when no filter was requested, so callers can tell "no filter"
- * apart from "filter matched nothing". */
+export declare function allVectors(store: StoreHandle, dim: number): {
+    ids: number[];
+    flat: Float32Array;
+};
+/** ids matching the given filters, answered from the secondary indexes. Returns
+ * undefined when no filter was requested, so callers can tell "no filter" from
+ * "filter matched nothing" (design doc §07). */
 export declare function filterIds(store: StoreHandle, filters: {
     project?: string;
     sessionId?: string;
     after?: string;
     before?: string;
 }): number[] | undefined;
-/** Every exchange with an id at or above `fromId`, in id order. This is how the
- * text index catches up from its cursor (design doc §09). */
+/** Every exchange with an id at or above `fromId`, in id order (design doc §09). */
 export declare function exchangesFrom(store: StoreHandle, fromId: number): ConversationExchange[];
-/** Substring search over exchange text, with optional date/project/session filters
- * applied post-hoc (design doc §07: "text 检索... 照抄, 对 exchanges sub-DB 做 cursor
- * 遍历做子串匹配"). O(n) full scan -- fine at the thousands-to-tens-of-thousands scale
- * this engine targets (see design doc §04). */
+/** Substring scan, newest first. The fallback when the BM25 addon is missing;
+ * O(n) is fine at the thousands-to-tens-of-thousands scale this targets. */
 export declare function textSearch(store: StoreHandle, query: string, opts: {
     after?: string;
     before?: string;

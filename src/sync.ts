@@ -7,15 +7,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseConversation, projectFromPath } from './parser.js';
 import { EMBEDDING_MODEL, generateExchangeEmbedding } from './embeddings.js';
-import { exchangesFrom, insertExchange, putVector, type StoreHandle } from './store.js';
+import { exchangesFrom, insertExchangesForFile, putVector, syncCursorKey, type StoreHandle } from './store.js';
 import { VectorIndex } from './vector-index.js';
 import { TextIndex } from './text-index.js';
 
 const DEFAULT_TRANSCRIPTS_DIR = path.join(process.env.HOME ?? '', '.claude', 'projects');
-
-function metaKey(archivePath: string): string {
-  return `synced_line_end:${archivePath}`;
-}
 
 /** Which embedding model every vector in the store came from. */
 export const EMBEDDING_MODEL_KEY = 'embedding_model';
@@ -149,24 +145,26 @@ export async function syncAll(
   for (const filePath of walkJsonlFiles(transcriptsDir)) {
     filesScanned++;
     const project = projectFromPath(filePath);
-    const cursor = (store.meta.get(metaKey(filePath)) as number | undefined) ?? 0;
+    // This read is only an optimisation, to avoid embedding rows another sync
+    // has already stored. The authoritative check is inside the insert
+    // transaction below, which re-reads the cursor under LMDB's write lock.
+    const cursor = (store.meta.get(syncCursorKey(filePath)) as number | undefined) ?? 0;
 
     const exchanges = await parseConversation(filePath, project, filePath);
     const newExchanges = exchanges.filter((e) => e.lineEnd > cursor);
     if (newExchanges.length === 0) continue;
 
+    const pending = [];
     for (const exchange of newExchanges) {
       // Subagent turns are never returned by vector search, so embedding them
       // would be paying the slowest part of sync for nothing.
       const embedding = exchange.isSidechain
         ? null
         : await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage);
-      insertExchange(store, { ...exchange, embeddingVersion: 1 }, embedding);
-      exchangesIndexed++;
+      pending.push({ exchange: { ...exchange, embeddingVersion: 1 }, embedding });
     }
-
-    const maxLineEnd = Math.max(...newExchanges.map((e) => e.lineEnd));
-    store.meta.putSync(metaKey(filePath), maxLineEnd);
+    const { ids } = insertExchangesForFile(store, filePath, pending);
+    exchangesIndexed += ids.length;
   }
 
   if (exchangesIndexed > 0 || migration.reembedded > 0) {

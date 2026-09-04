@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod vector;
+pub mod store;
 
 // The napi layer links against Node's symbols, which are not available to a
 // `cargo test` binary -- so it is compiled out of the test build. `engine.rs`

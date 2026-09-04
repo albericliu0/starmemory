@@ -72,16 +72,7 @@ export class VectorIndex {
    * sub-second operation. Subagent turns never appear here because store.ts
    * gives them no vector. */
   rebuild(store: StoreHandle): void {
-    const ids: number[] = [];
-    const chunks: Float32Array[] = [];
-    for (const { id, vector } of allVectors(store, this.options.dim)) {
-      ids.push(id);
-      chunks.push(vector);
-    }
-
-    const flat = new Float32Array(ids.length * this.options.dim);
-    chunks.forEach((vector, i) => flat.set(vector, i * this.options.dim));
-
+    const { ids, flat } = allVectors(store, this.options.dim);
     addon().buildVectorIndex(toNative(this.options), Float64Array.from(ids), flat, this.indexPath);
     this.searcher = addon().VectorSearcher.open(toNative(this.options), this.indexPath);
     store.meta.putSync(VECTOR_INDEX_VERSION_KEY, addon().vectorIndexVersion());

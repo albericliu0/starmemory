@@ -89,18 +89,22 @@ export async function ensureReady({ root = PLUGIN_ROOT, quiet = false } = {}) {
 /** Hand off to a script under dist/, forwarding signals so Claude Code can stop
  * it cleanly. Kept as a spawn rather than an import so the child gets a fresh
  * module resolution pass, now that node_modules definitely exists. */
-export function handOff(relativeScript, args = []) {
+export function handOff(relativeScript, args = [], { watchStdin = true } = {}) {
   const target = path.join(PLUGIN_ROOT, relativeScript);
   const child = spawn(process.execPath, [target, ...args], { stdio: 'inherit', shell: false });
 
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
     process.on(signal, () => child.kill(signal));
   }
-  // Claude Code closes stdin when it goes away; without this the server lingers.
-  process.stdin.on('end', () => {
-    child.kill();
-    process.exit(0);
-  });
+  // Claude Code closes stdin when it goes away; without this the MCP server
+  // lingers. A detached sync has no stdin at all (it is /dev/null, which ends
+  // immediately), so it must opt out or it kills its own work on the spot.
+  if (watchStdin) {
+    process.stdin.on('end', () => {
+      child.kill();
+      process.exit(0);
+    });
+  }
 
   child.on('error', (error) => {
     log(`starmemory: failed to start ${relativeScript}: ${error.message}`);
