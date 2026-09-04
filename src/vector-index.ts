@@ -9,6 +9,11 @@ import { EMBEDDING_DIM } from './embeddings.js';
 import { allVectors, type StoreHandle } from './store.js';
 import { addon, type NativeVectorOptions, type NativeVectorSearcher } from './addon.js';
 
+/** Which addon generation built the index file on disk. Bumped in vector.rs
+ * whenever the on-disk layout or graph parameters change; a mismatch means the
+ * file can still open but must not be trusted, so it is rebuilt (design doc §10). */
+export const VECTOR_INDEX_VERSION_KEY = 'vector_index_version';
+
 export interface HnswOptions {
   dim: number;
   /** HNSW's M: graph connectivity. */
@@ -46,7 +51,9 @@ export class VectorIndex {
   static open(store: StoreHandle, indexPath: string, options: Partial<HnswOptions> = {}): VectorIndex {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const index = new VectorIndex(indexPath, opts);
-    if (fs.existsSync(indexPath)) {
+    const recorded = store.meta.get(VECTOR_INDEX_VERSION_KEY) as number | undefined;
+    const current = addon().vectorIndexVersion();
+    if (fs.existsSync(indexPath) && recorded === current) {
       try {
         index.searcher = addon().VectorSearcher.open(toNative(opts), indexPath);
         return index;
@@ -77,6 +84,7 @@ export class VectorIndex {
 
     addon().buildVectorIndex(toNative(this.options), Float64Array.from(ids), flat, this.indexPath);
     this.searcher = addon().VectorSearcher.open(toNative(this.options), this.indexPath);
+    store.meta.putSync(VECTOR_INDEX_VERSION_KEY, addon().vectorIndexVersion());
   }
 
   /** Top-k by cosine similarity, optionally restricted to `filterIds`.

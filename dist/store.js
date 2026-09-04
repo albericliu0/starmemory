@@ -69,16 +69,28 @@ export function getExchange(store, id) {
     const raw = store.exchanges.get(id);
     return raw ? JSON.parse(raw) : undefined;
 }
-export function getVector(store, id, dim) {
-    const buf = store.vectors.get(id);
-    if (!buf)
+/** A vector written by a different embedding model has a different byte length.
+ * Reading it at the current `dim` would produce garbage, so such rows are treated
+ * as absent until ensureEmbeddingModel() rewrites them. */
+function vectorOfDim(buf, dim) {
+    if (buf.byteLength !== dim * 4)
         return undefined;
     return new Float32Array(buf.buffer, buf.byteOffset, dim);
 }
-/** All (id, vector) pairs in the store, for a full index rebuild (design doc §07). */
+export function getVector(store, id, dim) {
+    const buf = store.vectors.get(id);
+    return buf ? vectorOfDim(buf, dim) : undefined;
+}
+export function putVector(store, id, embedding) {
+    store.vectors.putSync(id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength));
+}
+/** All (id, vector) pairs of the current dimension, for a full index rebuild
+ * (design doc §07). Stale-model vectors are skipped, not misread. */
 export function* allVectors(store, dim) {
     for (const { key, value } of store.vectors.getRange()) {
-        yield { id: key, vector: new Float32Array(value.buffer, value.byteOffset, dim) };
+        const vector = vectorOfDim(value, dim);
+        if (vector)
+            yield { id: key, vector };
     }
 }
 /** ids whose exchange matches the given filters (design doc §07's "元数据过滤"

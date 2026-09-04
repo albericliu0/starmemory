@@ -17,7 +17,9 @@ export declare function nextId(store: StoreHandle): number;
 export declare function insertExchange(store: StoreHandle, exchange: Omit<ConversationExchange, 'id'>, embedding: Float32Array | null): number;
 export declare function getExchange(store: StoreHandle, id: number): ConversationExchange | undefined;
 export declare function getVector(store: StoreHandle, id: number, dim: number): Float32Array | undefined;
-/** All (id, vector) pairs in the store, for a full index rebuild (design doc §07). */
+export declare function putVector(store: StoreHandle, id: number, embedding: Float32Array): void;
+/** All (id, vector) pairs of the current dimension, for a full index rebuild
+ * (design doc §07). Stale-model vectors are skipped, not misread. */
 export declare function allVectors(store: StoreHandle, dim: number): Generator<{
     id: number;
     vector: Float32Array;

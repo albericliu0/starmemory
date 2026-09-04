@@ -14,7 +14,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 /// Bumped when the on-disk layout or the graph parameters change, so a stale
 /// index file is rebuilt from LMDB rather than silently answering differently.
-pub const VECTOR_INDEX_VERSION: u32 = 1;
+pub const VECTOR_INDEX_VERSION: u32 = 2; // 2: vectors stored as f16
 
 #[derive(Debug, Clone, Copy)]
 pub struct VectorOptions {
@@ -44,7 +44,10 @@ fn index_options(options: &VectorOptions) -> IndexOptions {
     IndexOptions {
         dimensions: options.dim,
         metric: MetricKind::IP,
-        quantization: ScalarKind::F32,
+        // f16 storage: on 20k x 1024 clustered vectors recall@10 was 0.998 vs
+        // 0.996 for f32, search 25% faster, index file half the size. i8 was
+        // tried and rejected: recall fell to 0.80 on inner product.
+        quantization: ScalarKind::F16,
         connectivity: options.connectivity,
         expansion_add: options.expansion_add,
         expansion_search: options.expansion_search,

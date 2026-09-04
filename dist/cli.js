@@ -32,7 +32,8 @@ async function main() {
                 const bm25 = result.textSkipped
                     ? 'BM25 index left to another running sync'
                     : `${result.textIndexed} added to the BM25 index`;
-                console.log(`Scanned ${result.filesScanned} files, indexed ${result.exchangesIndexed} new exchanges, ${bm25}.`);
+                const migrated = result.reembedded > 0 ? `, re-embedded ${result.reembedded} for the new model` : '';
+                console.log(`Scanned ${result.filesScanned} files, indexed ${result.exchangesIndexed} new exchanges${migrated}, ${bm25}.`);
             }
         }
         finally {

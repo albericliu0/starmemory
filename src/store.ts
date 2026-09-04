@@ -94,16 +94,29 @@ export function getExchange(store: StoreHandle, id: number): ConversationExchang
   return raw ? (JSON.parse(raw) as ConversationExchange) : undefined;
 }
 
-export function getVector(store: StoreHandle, id: number, dim: number): Float32Array | undefined {
-  const buf = store.vectors.get(id);
-  if (!buf) return undefined;
+/** A vector written by a different embedding model has a different byte length.
+ * Reading it at the current `dim` would produce garbage, so such rows are treated
+ * as absent until ensureEmbeddingModel() rewrites them. */
+function vectorOfDim(buf: Buffer, dim: number): Float32Array | undefined {
+  if (buf.byteLength !== dim * 4) return undefined;
   return new Float32Array(buf.buffer, buf.byteOffset, dim);
 }
 
-/** All (id, vector) pairs in the store, for a full index rebuild (design doc §07). */
+export function getVector(store: StoreHandle, id: number, dim: number): Float32Array | undefined {
+  const buf = store.vectors.get(id);
+  return buf ? vectorOfDim(buf, dim) : undefined;
+}
+
+export function putVector(store: StoreHandle, id: number, embedding: Float32Array): void {
+  store.vectors.putSync(id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength));
+}
+
+/** All (id, vector) pairs of the current dimension, for a full index rebuild
+ * (design doc §07). Stale-model vectors are skipped, not misread. */
 export function* allVectors(store: StoreHandle, dim: number): Generator<{ id: number; vector: Float32Array }> {
   for (const { key, value } of store.vectors.getRange()) {
-    yield { id: key, vector: new Float32Array(value.buffer, value.byteOffset, dim) };
+    const vector = vectorOfDim(value, dim);
+    if (vector) yield { id: key, vector };
   }
 }
 

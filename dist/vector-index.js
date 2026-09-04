@@ -8,6 +8,10 @@ import fs from 'node:fs';
 import { EMBEDDING_DIM } from './embeddings.js';
 import { allVectors } from './store.js';
 import { addon } from './addon.js';
+/** Which addon generation built the index file on disk. Bumped in vector.rs
+ * whenever the on-disk layout or graph parameters change; a mismatch means the
+ * file can still open but must not be trusted, so it is rebuilt (design doc §10). */
+export const VECTOR_INDEX_VERSION_KEY = 'vector_index_version';
 /** Unchanged from the faiss build, so recall stays comparable. Embeddings are
  * already L2-normalised, so the engine's inner product is cosine similarity. */
 const DEFAULT_OPTIONS = {
@@ -35,7 +39,9 @@ export class VectorIndex {
     static open(store, indexPath, options = {}) {
         const opts = { ...DEFAULT_OPTIONS, ...options };
         const index = new VectorIndex(indexPath, opts);
-        if (fs.existsSync(indexPath)) {
+        const recorded = store.meta.get(VECTOR_INDEX_VERSION_KEY);
+        const current = addon().vectorIndexVersion();
+        if (fs.existsSync(indexPath) && recorded === current) {
             try {
                 index.searcher = addon().VectorSearcher.open(toNative(opts), indexPath);
                 return index;
@@ -64,6 +70,7 @@ export class VectorIndex {
         chunks.forEach((vector, i) => flat.set(vector, i * this.options.dim));
         addon().buildVectorIndex(toNative(this.options), Float64Array.from(ids), flat, this.indexPath);
         this.searcher = addon().VectorSearcher.open(toNative(this.options), this.indexPath);
+        store.meta.putSync(VECTOR_INDEX_VERSION_KEY, addon().vectorIndexVersion());
     }
     /** Top-k by cosine similarity, optionally restricted to `filterIds`.
      *

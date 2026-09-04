@@ -1,4 +1,8 @@
 import { type StoreHandle } from './store.js';
+/** Which addon generation built the index file on disk. Bumped in vector.rs
+ * whenever the on-disk layout or graph parameters change; a mismatch means the
+ * file can still open but must not be trusted, so it is rebuilt (design doc §10). */
+export declare const VECTOR_INDEX_VERSION_KEY = "vector_index_version";
 export interface HnswOptions {
     dim: number;
     /** HNSW's M: graph connectivity. */

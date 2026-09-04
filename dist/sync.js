@@ -6,11 +6,34 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseConversation, projectFromPath } from './parser.js';
-import { generateExchangeEmbedding } from './embeddings.js';
-import { exchangesFrom, insertExchange } from './store.js';
+import { EMBEDDING_MODEL, generateExchangeEmbedding } from './embeddings.js';
+import { exchangesFrom, insertExchange, putVector } from './store.js';
 const DEFAULT_TRANSCRIPTS_DIR = path.join(process.env.HOME ?? '', '.claude', 'projects');
 function metaKey(archivePath) {
     return `synced_line_end:${archivePath}`;
+}
+/** Which embedding model every vector in the store came from. */
+export const EMBEDDING_MODEL_KEY = 'embedding_model';
+/** Bring every stored vector onto the current embedding model.
+ *
+ * Vectors from different models cannot be compared, so a model change means
+ * re-embedding the whole store, not just new rows. A store with no recorded
+ * model is treated the same way: it predates this check, so its vectors are
+ * assumed stale. Subagent turns get no vector, matching insertExchange(). */
+export async function ensureEmbeddingModel(store) {
+    const recorded = store.meta.get(EMBEDDING_MODEL_KEY);
+    if (recorded === EMBEDDING_MODEL)
+        return { reembedded: 0 };
+    let reembedded = 0;
+    for (const exchange of exchangesFrom(store, 0)) {
+        if (exchange.isSidechain)
+            continue;
+        const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage);
+        putVector(store, exchange.id, embedding);
+        reembedded++;
+    }
+    store.meta.putSync(EMBEDDING_MODEL_KEY, EMBEDDING_MODEL);
+    return { reembedded };
 }
 /** Next exchange id the text index has not seen. Kept in LMDB, not in tantivy,
  * because LMDB is the source of truth (design doc §09). */
@@ -74,6 +97,9 @@ function* walkJsonlFiles(dir) {
 export async function syncAll(store, index, transcriptsDir = DEFAULT_TRANSCRIPTS_DIR, textIndex) {
     let filesScanned = 0;
     let exchangesIndexed = 0;
+    // Before touching anything else: if the model changed, every existing vector
+    // is stale and the graph built from them would be meaningless.
+    const migration = await ensureEmbeddingModel(store);
     for (const filePath of walkJsonlFiles(transcriptsDir)) {
         filesScanned++;
         const project = projectFromPath(filePath);
@@ -94,11 +120,17 @@ export async function syncAll(store, index, transcriptsDir = DEFAULT_TRANSCRIPTS
         const maxLineEnd = Math.max(...newExchanges.map((e) => e.lineEnd));
         store.meta.putSync(metaKey(filePath), maxLineEnd);
     }
-    if (exchangesIndexed > 0) {
+    if (exchangesIndexed > 0 || migration.reembedded > 0) {
         index.rebuild(store);
     }
     // Always attempt this, even when we added nothing: another process may have
     // written rows it could not index, and we may be the one holding the lock now.
     const textSync = textIndex ? syncTextIndex(store, textIndex) : undefined;
-    return { filesScanned, exchangesIndexed, textIndexed: textSync?.indexed ?? 0, textSkipped: textSync?.skipped ?? false };
+    return {
+        filesScanned,
+        exchangesIndexed,
+        reembedded: migration.reembedded,
+        textIndexed: textSync?.indexed ?? 0,
+        textSkipped: textSync?.skipped ?? false,
+    };
 }

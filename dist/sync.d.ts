@@ -1,6 +1,19 @@
 import { type StoreHandle } from './store.js';
 import { VectorIndex } from './vector-index.js';
 import { TextIndex } from './text-index.js';
+/** Which embedding model every vector in the store came from. */
+export declare const EMBEDDING_MODEL_KEY = "embedding_model";
+export interface EmbeddingMigrationResult {
+    /** Exchanges whose vector was recomputed with the current model. */
+    reembedded: number;
+}
+/** Bring every stored vector onto the current embedding model.
+ *
+ * Vectors from different models cannot be compared, so a model change means
+ * re-embedding the whole store, not just new rows. A store with no recorded
+ * model is treated the same way: it predates this check, so its vectors are
+ * assumed stale. Subagent turns get no vector, matching insertExchange(). */
+export declare function ensureEmbeddingModel(store: StoreHandle): Promise<EmbeddingMigrationResult>;
 /** Next exchange id the text index has not seen. Kept in LMDB, not in tantivy,
  * because LMDB is the source of truth (design doc §09). */
 export declare const TEXT_CURSOR_KEY = "text_index_cursor";
@@ -24,6 +37,8 @@ export declare function syncTextIndex(store: StoreHandle, index: TextIndex): Tex
 export interface SyncResult {
     filesScanned: number;
     exchangesIndexed: number;
+    /** Vectors recomputed because the embedding model changed (see ensureEmbeddingModel). */
+    reembedded: number;
     /** Documents added to the BM25 index this run. */
     textIndexed: number;
     /** True when another process held the BM25 writer lock (design doc §09). */
