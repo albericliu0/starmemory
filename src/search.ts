@@ -86,6 +86,7 @@ export async function search(
     // there is no over-fetch-and-trim. Subagent turns never reach here at all:
     // store.ts does not give them a vector (design doc §07).
     const ids = filterIds(store, { project, sessionId, harness, after, before });
+    index.refresh();
     const queryEmbedding = await generateQueryEmbedding(query);
     const hits = index.search(queryEmbedding, depth, ids);
     for (const { id, score } of hits) similarityById.set(id, score);
@@ -127,6 +128,8 @@ export async function searchMultipleConcepts(
 ): Promise<MultiConceptResult[]> {
   const { limit = 10, project, sessionId, harness } = options;
   const ids = filterIds(store, { project, sessionId, harness });
+  // Once for the whole query, so every concept is answered from the same graph.
+  index.refresh();
 
   const perConcept = await Promise.all(
     concepts.map(async (concept) => {

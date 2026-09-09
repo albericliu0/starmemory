@@ -44,6 +44,8 @@ export interface NativeTextIndex {
   addDocuments(docs: NativeTextDoc[]): void;
   commit(): void;
   deleteAll(): void;
+  /** Queue these ids for removal; commit() applies it. Needs the writer. */
+  deleteDocuments(ids: Float64Array): void;
   search(query: string, limit: number, filter: NativeTextFilter | null): NativeHit[];
   numDocs(): number;
 }
@@ -58,6 +60,8 @@ export interface NativeVectorOptions {
 export interface NativeVectorSearcher {
   search(query: Float32Array, limit: number, filterIds?: Float64Array | null): NativeHit[];
   len(): number;
+  /** Unmap the file now. Idempotent; search() and len() throw afterwards. */
+  close(): void;
 }
 
 export interface NativeStoreRow {
@@ -78,6 +82,8 @@ export interface NativeInsertResult {
 
 export interface NativeStore {
   insert(rows: NativeStoreRow[], cursorKey: string | null): NativeInsertResult;
+  /** Remove rows, their vectors and index entries in one transaction; returns how many existed. */
+  delete(ids: Float64Array): number;
   get(id: number): string | null;
   getVector(id: number): Float32Array | null;
   putVector(id: number, vector: Float32Array): void;

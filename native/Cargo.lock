@@ -1541,6 +1541,7 @@ name = "starmemory-native"
 version = "0.1.0"
 dependencies = [
  "heed",
+ "libc",
  "napi",
  "napi-build",
  "napi-derive",

@@ -86,6 +86,13 @@ impl TextIndex {
         self.engine.delete_all().map_err(to_js)
     }
 
+    /// Queue these ids for removal; commit() applies it.
+    #[napi]
+    pub fn delete_documents(&mut self, ids: Float64Array) -> Result<()> {
+        let ids: Vec<u64> = ids.as_ref().iter().map(|&v| v as u64).collect();
+        self.engine.delete_documents(&ids).map_err(to_js)
+    }
+
     #[napi]
     pub fn search(
         &self,
@@ -182,7 +189,10 @@ pub fn build_vector_index(
 
 #[napi]
 pub struct VectorSearcher {
-    index: VectorIndex,
+    /// None once closed. The searcher is an mmap of the index file, and the
+    /// TypeScript side swaps to a fresh one when the sync replaces that file;
+    /// closing releases the old mapping now rather than at garbage collection.
+    index: Option<VectorIndex>,
 }
 
 #[napi]
@@ -191,7 +201,19 @@ impl VectorSearcher {
     pub fn open(options: VectorOptionsJs, path: String) -> Result<Self> {
         let index = VectorIndex::open((&options).into(), std::path::Path::new(&path))
             .map_err(to_js)?;
-        Ok(Self { index })
+        Ok(Self { index: Some(index) })
+    }
+
+    fn index(&self) -> Result<&VectorIndex> {
+        self.index
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("vector searcher is closed"))
+    }
+
+    /// Unmap the index file. Idempotent; every later call fails.
+    #[napi]
+    pub fn close(&mut self) {
+        self.index = None;
     }
 
     /// `filter_ids` restricts the traversal itself, so a filtered query does not
@@ -207,7 +229,7 @@ impl VectorSearcher {
             filter_ids.map(|ids| ids.as_ref().iter().map(|&v| v as u64).collect());
 
         let hits = self
-            .index
+            .index()?
             .search(query.as_ref(), limit as usize, allowed.as_deref())
             .map_err(to_js)?;
 
@@ -218,8 +240,8 @@ impl VectorSearcher {
     }
 
     #[napi]
-    pub fn len(&self) -> u32 {
-        self.index.len() as u32
+    pub fn len(&self) -> Result<u32> {
+        Ok(self.index()?.len() as u32)
     }
 }
 
@@ -310,6 +332,13 @@ impl StoreHandle {
             .collect();
         let out = self.store()?.insert(&rows, cursor_key.as_deref()).map_err(to_js)?;
         Ok(InsertResult { ids: out.ids.into_iter().map(|i| i as f64).collect(), skipped: out.skipped as u32 })
+    }
+
+    /// Remove rows, their vectors and index entries in one transaction.
+    #[napi]
+    pub fn delete(&self, ids: Float64Array) -> Result<u32> {
+        let ids: Vec<u64> = ids.as_ref().iter().map(|&v| v as u64).collect();
+        Ok(self.store()?.delete(&ids).map_err(to_js)? as u32)
     }
 
     #[napi]
