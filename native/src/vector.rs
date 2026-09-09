@@ -7,8 +7,6 @@
 //! on its own.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
 
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
@@ -62,45 +60,6 @@ pub struct VectorIndex {
     options: VectorOptions,
 }
 
-/// Distinguishes builds within one process; the pid distinguishes processes.
-static BUILD_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// A build older than this cannot still be running; its temp file is junk.
-const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
-
-/// `.index.hnsw.<pid>.<n>.tmp`, beside the index so the rename stays on one
-/// filesystem. Hidden so a directory listing shows the index alone.
-fn temp_file_name(file_name: &str) -> String {
-    let n = BUILD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(".{}.{}.{}.tmp", file_name, std::process::id(), n)
-}
-
-/// Remove temp files of earlier builds of this index that died mid-write. A
-/// recent one may belong to another sync still writing, so age decides, not
-/// name. Best effort: a failure here must not fail the build.
-fn sweep_stale_temp_files(path: &Path, file_name: &str) {
-    let Some(parent) = path.parent() else { return };
-    let Ok(entries) = std::fs::read_dir(parent) else { return };
-    let prefix = format!(".{}.", file_name);
-    let now = SystemTime::now();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !(name.starts_with(&prefix) && name.ends_with(".tmp")) {
-            continue;
-        }
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > STALE_TEMP_AGE);
-        if stale {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-}
-
 impl VectorIndex {
     /// Build the whole graph from scratch and write it to `path`.
     ///
@@ -146,33 +105,12 @@ impl VectorIndex {
             Ok(())
         })?;
 
-        // usearch's save() truncates and rewrites the path in place, and view()
-        // is an mmap of that same inode, so a reader mid-session (the MCP
-        // server) would have its graph swapped out from under it and crash on
-        // its next search. Write beside the target and rename over it instead:
-        // the rename is atomic, and the reader's mapping keeps the old inode
-        // alive until it reopens.
-        //
-        // This relies on POSIX semantics: rename replaces an open, mapped file
-        // and the reader is unaffected. Windows refuses to replace a mapped file,
-        // so a build there will need another scheme (versioned file names and
-        // a pointer file, say) when that platform is added.
-        let final_path = path.to_str().ok_or("index path is not valid UTF-8")?;
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or("index path has no file name")?;
-        sweep_stale_temp_files(path, file_name);
-        let temp_path = path.with_file_name(temp_file_name(file_name));
-        let temp_str = temp_path.to_str().ok_or("index path is not valid UTF-8")?;
-        if let Err(error) = index.save(temp_str) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error.into());
-        }
-        if let Err(error) = std::fs::rename(&temp_path, final_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error.into());
-        }
+        // Straight to `path`. Callers never hand us a path a reader may have
+        // mapped: the TypeScript side writes each rebuild to the next generation
+        // file and switches readers through LMDB meta (design doc
+        // windows-support §07), so nothing here depends on how the OS treats a
+        // rename over, or a delete of, a mapped file.
+        index.save(path.to_str().ok_or("index path is not valid UTF-8")?)?;
         Ok(())
     }
 
@@ -372,15 +310,16 @@ mod tests {
     }
 
     #[test]
-    fn a_live_reader_survives_the_index_being_rebuilt_underneath_it() {
-        // The MCP server views the file for a whole session while the
-        // SessionStart sync rebuilds it. The reader keeps its old graph until
-        // it reopens; it must never see a half-written or swapped-out file.
+    fn a_reader_on_one_generation_is_untouched_by_a_build_to_the_next() {
+        // The MCP server maps generation g while the sync builds g+1 beside it.
+        // Nothing is written into g, so the reader's graph stays intact until
+        // it chooses to switch; a fresh open of g+1 sees the new corpus.
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("index.usearch");
+        let g0 = dir.path().join("index-v2.g0.usearch");
+        let g1 = dir.path().join("index-v2.g1.usearch");
         let (ids, vectors) = corpus();
-        VectorIndex::build(options(), &ids, &vectors, &path).unwrap();
-        let reader = VectorIndex::open(options(), &path).unwrap();
+        VectorIndex::build(options(), &ids, &vectors, &g0).unwrap();
+        let reader = VectorIndex::open(options(), &g0).unwrap();
         let query = normalise(vec![0.0, 1.0, 0.0, 0.0]);
         assert_eq!(ids_of(&reader.search(&query, 1, None).unwrap()), vec![2]);
 
@@ -391,13 +330,14 @@ mod tests {
             let angle = i as f32 / count as f32;
             new_vectors.extend(normalise(vec![angle.cos(), angle.sin(), 0.0, 0.0]));
         }
-        VectorIndex::build(options(), &new_ids, &new_vectors, &path).unwrap();
+        VectorIndex::build(options(), &new_ids, &new_vectors, &g1).unwrap();
 
         assert_eq!(reader.len(), 3);
         assert_eq!(ids_of(&reader.search(&query, 1, None).unwrap()), vec![2]);
-        assert_eq!(VectorIndex::open(options(), &path).unwrap().len(), count);
+        assert_eq!(VectorIndex::open(options(), &g1).unwrap().len(), count);
     }
 
+    #[cfg(unix)]
     #[test]
     fn opening_a_missing_index_fails_without_closing_a_descriptor_it_never_owned() {
         // usearch's memory_mapped_file_t::close() runs `::close(file_descriptor_)`
@@ -416,54 +356,6 @@ mod tests {
         assert!(result.is_err());
         let still_open = unsafe { libc::fcntl(0, libc::F_GETFD) } != -1;
         assert!(still_open, "fd 0 was closed by opening a missing index");
-    }
-
-    #[test]
-    fn a_build_sweeps_up_temp_files_left_by_a_killed_build_but_not_fresh_ones() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("index.usearch");
-        let stale = dir.path().join(".index.usearch.999999.0.tmp");
-        let fresh = dir.path().join(".index.usearch.999998.0.tmp");
-        let unrelated = dir.path().join(".other.usearch.999997.0.tmp");
-        for p in [&stale, &fresh, &unrelated] {
-            std::fs::write(p, b"partial").unwrap();
-        }
-        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
-        std::fs::File::options()
-            .write(true)
-            .open(&stale)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&unrelated)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
-
-        let (ids, vectors) = corpus();
-        VectorIndex::build(options(), &ids, &vectors, &path).unwrap();
-
-        assert!(!stale.exists(), "an hours-old temp file for this index is junk");
-        assert!(fresh.exists(), "a fresh temp file may be another sync mid-write");
-        assert!(unrelated.exists(), "only this index's temp files are ours to remove");
-        assert_eq!(VectorIndex::open(options(), &path).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn a_build_leaves_no_temp_file_of_its_own_behind() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("index.usearch");
-        let (ids, vectors) = corpus();
-        VectorIndex::build(options(), &ids, &vectors, &path).unwrap();
-        VectorIndex::build(options(), &ids, &vectors, &path).unwrap();
-
-        let names: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, vec!["index.usearch".to_string()]);
     }
 
     #[test]
