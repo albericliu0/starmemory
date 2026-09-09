@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openStore } from './store.js';
 import { VectorIndex } from './vector-index.js';
-import { TextIndex, isTextIndexAvailable } from './text-index.js';
+import { isTextIndexAvailable, openVersionedTextIndex } from './text-index.js';
 import { syncAll } from './sync.js';
 import { search } from './search.js';
 
@@ -15,6 +15,8 @@ const DB_PATH =
   process.env.STARMEMORY_DB_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'store.mdb');
 const INDEX_PATH =
   process.env.STARMEMORY_INDEX_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'index.hnsw');
+// The base path only: the schema version is appended (text -> text-v2), so
+// builds with different schemas never share a directory (design doc §10).
 const TEXT_INDEX_PATH =
   process.env.STARMEMORY_TEXT_INDEX_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'text');
 
@@ -23,7 +25,7 @@ function openEngine() {
   const store = openStore(DB_PATH);
   const index = VectorIndex.open(store, INDEX_PATH);
   // Without the compiled addon the engine still works, on the substring fallback.
-  const textIndex = isTextIndexAvailable() ? TextIndex.open(TEXT_INDEX_PATH) : undefined;
+  const textIndex = isTextIndexAvailable() ? openVersionedTextIndex(TEXT_INDEX_PATH) : undefined;
   return { store, index, textIndex };
 }
 

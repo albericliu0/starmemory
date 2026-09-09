@@ -18,16 +18,18 @@ export interface EmbeddingMigrationResult {
  * model is treated the same way: it predates this check, so its vectors are
  * assumed stale. Subagent turns get no vector, matching insertExchange(). */
 export declare function ensureEmbeddingModel(store: StoreHandle): Promise<EmbeddingMigrationResult>;
-/** Next exchange id the text index has not seen. Kept in LMDB, not in tantivy,
- * because LMDB is the source of truth (design doc §09). */
-export declare const TEXT_CURSOR_KEY = "text_index_cursor";
-/** Schema/analyzer generation the current index was built with (design doc §10). */
-export declare const TEXT_VERSION_KEY = "text_index_version";
+/** Next exchange id the text index for one schema version has not seen. Kept
+ * in LMDB, not in tantivy, because LMDB is the source of truth (design doc §09).
+ * One key per schema version, to match the one directory per schema version
+ * (versionedTextIndexDir): a v1 and a v2 index each advance their own cursor,
+ * so neither mistakes the other's progress for its own. */
+export declare function textCursorKey(version: number): string;
 export interface TextSyncResult {
     /** Another process held the writer lock. Our rows are in LMDB and whoever
      * takes the lock next will index them, so this is not a failure. */
     skipped: boolean;
-    /** The addon's schema changed under an existing index, so it was thrown away. */
+    /** The index had no documents although the cursor said rows were indexed:
+     * its directory was wiped or is brand new, so every row was reloaded. */
     rebuilt: boolean;
     indexed: number;
 }

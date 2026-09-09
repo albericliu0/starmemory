@@ -41,11 +41,14 @@ export async function ensureEmbeddingModel(store) {
     store.meta.putSync(EMBEDDING_MODEL_KEY, EMBEDDING_MODEL);
     return { reembedded };
 }
-/** Next exchange id the text index has not seen. Kept in LMDB, not in tantivy,
- * because LMDB is the source of truth (design doc §09). */
-export const TEXT_CURSOR_KEY = 'text_index_cursor';
-/** Schema/analyzer generation the current index was built with (design doc §10). */
-export const TEXT_VERSION_KEY = 'text_index_version';
+/** Next exchange id the text index for one schema version has not seen. Kept
+ * in LMDB, not in tantivy, because LMDB is the source of truth (design doc §09).
+ * One key per schema version, to match the one directory per schema version
+ * (versionedTextIndexDir): a v1 and a v2 index each advance their own cursor,
+ * so neither mistakes the other's progress for its own. */
+export function textCursorKey(version) {
+    return `text_index_cursor:v${version}`;
+}
 /** Bring the BM25 index up to date with LMDB.
  *
  * The whole design of this function is "whoever gets the lock does the work
@@ -56,13 +59,13 @@ export function syncTextIndex(store, index) {
     if (!index.tryAcquireWriter()) {
         return { skipped: true, rebuilt: false, indexed: 0 };
     }
-    const storedVersion = store.meta.get(TEXT_VERSION_KEY);
-    let cursor = store.meta.get(TEXT_CURSOR_KEY) ?? 0;
+    const cursorKey = textCursorKey(index.version);
+    let cursor = store.meta.get(cursorKey) ?? 0;
     let rebuilt = false;
-    if (storedVersion !== index.version) {
-        // An index built by a different schema cannot answer queries parsed by this
-        // one. It is a cache, so the fix is to throw it away and reload from LMDB.
-        index.deleteAll();
+    if (cursor > 0 && index.numDocs() === 0) {
+        // LMDB remembers indexing rows this directory does not hold: it was wiped,
+        // or it is the first open of this schema's directory. The index is a cache
+        // over LMDB, so reload everything rather than trust the cursor.
         cursor = 0;
         rebuilt = true;
     }
@@ -73,9 +76,8 @@ export function syncTextIndex(store, index) {
     // One commit per batch: it fsyncs, so doing it per document would dominate.
     index.commit();
     if (pending.length > 0) {
-        store.meta.putSync(TEXT_CURSOR_KEY, pending[pending.length - 1].id + 1);
+        store.meta.putSync(cursorKey, pending[pending.length - 1].id + 1);
     }
-    store.meta.putSync(TEXT_VERSION_KEY, index.version);
     return { skipped: false, rebuilt, indexed: pending.length };
 }
 function* walkJsonlFiles(dir) {

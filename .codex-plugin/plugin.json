@@ -1,6 +1,6 @@
 {
   "name": "starmemory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Hybrid recall for Claude Code and Codex conversations: Tantivy BM25 + usearch HNSW over LMDB, fused by reciprocal rank. Both harnesses share one memory.",
   "author": {
     "name": "Wei Liu",

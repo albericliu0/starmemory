@@ -5,7 +5,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TextIndex, documentForExchange } from '../src/text-index.js';
+import {
+  TextIndex,
+  documentForExchange,
+  openVersionedTextIndex,
+  removeLegacyTextIndex,
+  versionedTextIndexDir,
+} from '../src/text-index.js';
 import type { ConversationExchange } from '../src/types.js';
 
 let dir: string;
@@ -189,5 +195,62 @@ describe('TextIndex', () => {
     const reader = TextIndex.open(path.join(dir, 'text'));
 
     expect(reader.search('saturated', 10).map((h) => h.id)).toEqual([5]);
+  });
+});
+
+// Design doc §10: the schema version is part of the directory name, so two
+// plugin builds with different schemas never open (and wipe) each other's index.
+describe('versionedTextIndexDir', () => {
+  it('puts each schema version of the index in its own sibling directory', () => {
+    const version = TextIndex.open(path.join(dir, 'text')).version;
+
+    expect(versionedTextIndexDir('/cfg/starmemory/text')).toBe(`/cfg/starmemory/text-v${version}`);
+  });
+});
+
+// Builds before the versioned directory kept the index at the bare base path.
+// That directory is dead weight once every build uses its own `-vN` sibling.
+describe('removeLegacyTextIndex', () => {
+  it('removes the unversioned directory an older build left behind', () => {
+    const legacy = path.join(dir, 'text');
+    TextIndex.open(legacy); // a real tantivy index, complete with meta.json
+
+    expect(removeLegacyTextIndex(legacy)).toBe(true);
+
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  it('leaves a directory alone that is not a tantivy index', () => {
+    const notAnIndex = path.join(dir, 'text');
+    fs.mkdirSync(notAnIndex);
+    fs.writeFileSync(path.join(notAnIndex, 'notes.txt'), 'keep me');
+
+    expect(removeLegacyTextIndex(notAnIndex)).toBe(false);
+
+    expect(fs.existsSync(path.join(notAnIndex, 'notes.txt'))).toBe(true);
+  });
+
+  it('reports false when there is nothing to remove', () => {
+    expect(removeLegacyTextIndex(path.join(dir, 'never-existed'))).toBe(false);
+  });
+});
+
+describe('openVersionedTextIndex', () => {
+  it('opens the directory for the current schema version', () => {
+    const base = path.join(dir, 'text');
+
+    const index = openVersionedTextIndex(base);
+
+    expect(index.directory).toBe(versionedTextIndexDir(base));
+    expect(fs.existsSync(index.directory)).toBe(true);
+  });
+
+  it('clears the legacy unversioned index on the way', () => {
+    const base = path.join(dir, 'text');
+    TextIndex.open(base);
+
+    openVersionedTextIndex(base);
+
+    expect(fs.existsSync(base)).toBe(false);
   });
 });

@@ -8,11 +8,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { openStore } from './store.js';
 import { VectorIndex } from './vector-index.js';
-import { TextIndex, isTextIndexAvailable } from './text-index.js';
+import { isTextIndexAvailable, openVersionedTextIndex } from './text-index.js';
 import { search, searchMultipleConcepts } from './search.js';
 import type { SearchResult, MultiConceptResult } from './types.js';
 
@@ -20,6 +21,8 @@ const DB_PATH =
   process.env.STARMEMORY_DB_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'store.mdb');
 const INDEX_PATH =
   process.env.STARMEMORY_INDEX_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'index.hnsw');
+// The base path only: the schema version is appended (text -> text-v2), so
+// builds with different schemas never share a directory (design doc §10).
 const TEXT_INDEX_PATH =
   process.env.STARMEMORY_TEXT_INDEX_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'text');
 
@@ -30,7 +33,7 @@ const index = VectorIndex.open(store, INDEX_PATH);
 // Read-only here: the MCP server never writes the index, sync does. Several
 // server processes reading the same directory is fine, tantivy readers are
 // snapshot-based and take no lock (design doc §09).
-const textIndex = isTextIndexAvailable() ? TextIndex.open(TEXT_INDEX_PATH) : undefined;
+const textIndex = isTextIndexAvailable() ? openVersionedTextIndex(TEXT_INDEX_PATH) : undefined;
 
 function formatResults(results: SearchResult[]): string {
   if (results.length === 0) return 'No results found.';
@@ -55,7 +58,8 @@ function formatMultiConceptResults(results: MultiConceptResult[], concepts: stri
     .join('\n');
 }
 
-const server = new McpServer({ name: 'starmemory', version: '0.1.0' });
+const { version: pluginVersion } = createRequire(import.meta.url)('../package.json') as { version: string };
+const server = new McpServer({ name: 'starmemory', version: pluginVersion });
 
 server.registerTool(
   'search',

@@ -59,18 +59,21 @@ export async function ensureEmbeddingModel(store: StoreHandle): Promise<Embeddin
   return { reembedded };
 }
 
-/** Next exchange id the text index has not seen. Kept in LMDB, not in tantivy,
- * because LMDB is the source of truth (design doc §09). */
-export const TEXT_CURSOR_KEY = 'text_index_cursor';
-
-/** Schema/analyzer generation the current index was built with (design doc §10). */
-export const TEXT_VERSION_KEY = 'text_index_version';
+/** Next exchange id the text index for one schema version has not seen. Kept
+ * in LMDB, not in tantivy, because LMDB is the source of truth (design doc §09).
+ * One key per schema version, to match the one directory per schema version
+ * (versionedTextIndexDir): a v1 and a v2 index each advance their own cursor,
+ * so neither mistakes the other's progress for its own. */
+export function textCursorKey(version: number): string {
+  return `text_index_cursor:v${version}`;
+}
 
 export interface TextSyncResult {
   /** Another process held the writer lock. Our rows are in LMDB and whoever
    * takes the lock next will index them, so this is not a failure. */
   skipped: boolean;
-  /** The addon's schema changed under an existing index, so it was thrown away. */
+  /** The index had no documents although the cursor said rows were indexed:
+   * its directory was wiped or is brand new, so every row was reloaded. */
   rebuilt: boolean;
   indexed: number;
 }
@@ -86,14 +89,14 @@ export function syncTextIndex(store: StoreHandle, index: TextIndex): TextSyncRes
     return { skipped: true, rebuilt: false, indexed: 0 };
   }
 
-  const storedVersion = store.meta.get(TEXT_VERSION_KEY) as number | undefined;
-  let cursor = (store.meta.get(TEXT_CURSOR_KEY) as number | undefined) ?? 0;
+  const cursorKey = textCursorKey(index.version);
+  let cursor = (store.meta.get(cursorKey) as number | undefined) ?? 0;
   let rebuilt = false;
 
-  if (storedVersion !== index.version) {
-    // An index built by a different schema cannot answer queries parsed by this
-    // one. It is a cache, so the fix is to throw it away and reload from LMDB.
-    index.deleteAll();
+  if (cursor > 0 && index.numDocs() === 0) {
+    // LMDB remembers indexing rows this directory does not hold: it was wiped,
+    // or it is the first open of this schema's directory. The index is a cache
+    // over LMDB, so reload everything rather than trust the cursor.
     cursor = 0;
     rebuilt = true;
   }
@@ -107,9 +110,8 @@ export function syncTextIndex(store: StoreHandle, index: TextIndex): TextSyncRes
   index.commit();
 
   if (pending.length > 0) {
-    store.meta.putSync(TEXT_CURSOR_KEY, pending[pending.length - 1].id + 1);
+    store.meta.putSync(cursorKey, pending[pending.length - 1].id + 1);
   }
-  store.meta.putSync(TEXT_VERSION_KEY, index.version);
 
   return { skipped: false, rebuilt, indexed: pending.length };
 }

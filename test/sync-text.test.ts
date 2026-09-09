@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openStore, insertExchange, type StoreHandle } from '../src/store.js';
 import { TextIndex } from '../src/text-index.js';
-import { syncTextIndex, TEXT_CURSOR_KEY, TEXT_VERSION_KEY } from '../src/sync.js';
+import { syncTextIndex, textCursorKey } from '../src/sync.js';
 
 let store: StoreHandle;
 let dir: string;
@@ -89,7 +89,7 @@ describe('syncTextIndex', () => {
     syncTextIndex(store, index);
 
     expect(second).toBe(first + 1);
-    expect(store.meta.get(TEXT_CURSOR_KEY)).toBe(second + 1);
+    expect(store.meta.get(textCursorKey(index.version))).toBe(second + 1);
   });
 
   it('reports skipped when another process holds the writer lock', () => {
@@ -110,7 +110,7 @@ describe('syncTextIndex', () => {
 
     syncTextIndex(store, openIndex());
 
-    expect(store.meta.get(TEXT_CURSOR_KEY)).toBeUndefined();
+    expect(store.meta.get(textCursorKey(holder.version))).toBeUndefined();
   });
 
   it('lets the next lock holder pick up the rows the skipped run wrote', () => {
@@ -126,26 +126,27 @@ describe('syncTextIndex', () => {
     expect(holder.numDocs()).toBe(2);
   });
 
-  it('records the addon version so a later run can detect a schema change', () => {
-    insert();
+  it('stores the cursor under a key that names the schema version', () => {
+    const first = insert();
     const index = openIndex();
 
     syncTextIndex(store, index);
 
-    expect(store.meta.get(TEXT_VERSION_KEY)).toBe(index.version);
+    expect(store.meta.get(textCursorKey(index.version))).toBe(first + 1);
   });
 
-  it('rebuilds from scratch when the stored version does not match the addon', () => {
+  it('rebuilds when the index is empty but the cursor says rows were indexed', () => {
+    // The directory was wiped (or is a fresh one for this schema) while LMDB
+    // still remembers a cursor. The index is a cache over LMDB: reload it all.
     insert();
-    const index = openIndex();
-    syncTextIndex(store, index);
-    store.meta.putSync(TEXT_VERSION_KEY, index.version - 1);
+    syncTextIndex(store, openIndex());
+    const fresh = TextIndex.open(path.join(dir, 'text-elsewhere'));
 
-    const result = syncTextIndex(store, index);
+    const result = syncTextIndex(store, fresh);
 
     expect(result.rebuilt).toBe(true);
     expect(result.indexed).toBe(1);
-    expect(index.numDocs()).toBe(1); // rebuilt, not duplicated
+    expect(fresh.numDocs()).toBe(1);
   });
 
   it('indexes subagent turns as well, so the index mirrors the store one for one', () => {

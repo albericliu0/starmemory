@@ -4,6 +4,7 @@
 // translation: an exchange becomes one indexed document, and ISO timestamps
 // become the epoch milliseconds the native range filter works in.
 import fs from 'node:fs';
+import path from 'node:path';
 import { addon, isAddonAvailable } from './addon.js';
 import { DEFAULT_HARNESS } from './store.js';
 /** True when the addon has been built. Callers that can still work without BM25
@@ -30,6 +31,31 @@ function toEpochMs(iso) {
         return undefined;
     const ms = Date.parse(iso);
     return Number.isNaN(ms) ? undefined : ms;
+}
+/** Where the index for the addon's current schema lives, given the unversioned
+ * base path (`.../text` -> `.../text-v2`). Each schema generation gets a sibling
+ * directory of its own, so a plugin build with a different schema opens a
+ * different directory instead of tripping over, or wiping, this one. Two builds
+ * sharing `~/.config/starmemory` (say, the installed plugin and a dev checkout)
+ * then coexist, each rebuilding its own index from LMDB (design doc §10). */
+export function versionedTextIndexDir(basePath) {
+    return `${basePath}-v${addon().indexVersion()}`;
+}
+/** Delete the index a build older than versionedTextIndexDir left at the bare
+ * base path. Only a directory that really is a tantivy index (it has a
+ * meta.json) is removed; anything else at that path is not ours to touch.
+ * Returns true when something was removed. */
+export function removeLegacyTextIndex(basePath) {
+    if (!fs.existsSync(path.join(basePath, 'meta.json')))
+        return false;
+    fs.rmSync(basePath, { recursive: true, force: true });
+    return true;
+}
+/** What the CLI and the MCP server call: open this build's own index directory
+ * under the configured base path, tidying up the pre-versioning one if present. */
+export function openVersionedTextIndex(basePath) {
+    removeLegacyTextIndex(basePath);
+    return TextIndex.open(versionedTextIndexDir(basePath));
 }
 export class TextIndex {
     native;
