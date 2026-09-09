@@ -6,9 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  OPENED_MARKER,
   TextIndex,
   documentForExchange,
   openVersionedTextIndex,
+  pruneStaleTextIndexDirs,
   removeLegacyTextIndex,
   versionedTextIndexDir,
 } from '../src/text-index.js';
@@ -252,5 +254,103 @@ describe('openVersionedTextIndex', () => {
     openVersionedTextIndex(base);
 
     expect(fs.existsSync(base)).toBe(false);
+  });
+});
+
+// A build only ever deletes directories that belong to *other* schema versions,
+// and only when nobody has opened them for a long time. Its own directory is
+// never a candidate, however long the machine sat idle.
+describe('pruneStaleTextIndexDirs', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.parse('2026-09-09T12:00:00Z');
+
+  function otherVersionDir(base: string): string {
+    const current = TextIndex.open(path.join(dir, 'probe')).version;
+    return `${base}-v${current + 1}`;
+  }
+
+  function markOpened(target: string, at: number): void {
+    const marker = path.join(target, OPENED_MARKER);
+    fs.writeFileSync(marker, '');
+    fs.utimesSync(marker, at / 1000, at / 1000);
+  }
+
+  it('removes another version that nobody has opened for longer than the idle limit', () => {
+    const base = path.join(dir, 'text');
+    const stale = otherVersionDir(base);
+    TextIndex.open(stale);
+    markOpened(stale, now - 40 * DAY);
+
+    const removed = pruneStaleTextIndexDirs(base, { now, maxIdleMs: 30 * DAY });
+
+    expect(removed).toEqual([stale]);
+    expect(fs.existsSync(stale)).toBe(false);
+  });
+
+  it('keeps another version that was opened recently', () => {
+    const base = path.join(dir, 'text');
+    const recent = otherVersionDir(base);
+    TextIndex.open(recent);
+    markOpened(recent, now - 2 * DAY);
+
+    expect(pruneStaleTextIndexDirs(base, { now, maxIdleMs: 30 * DAY })).toEqual([]);
+    expect(fs.existsSync(recent)).toBe(true);
+  });
+
+  it('never touches the current version, even when it looks idle', () => {
+    const base = path.join(dir, 'text');
+    const mine = versionedTextIndexDir(base);
+    TextIndex.open(mine);
+    markOpened(mine, now - 400 * DAY);
+
+    expect(pruneStaleTextIndexDirs(base, { now, maxIdleMs: 30 * DAY })).toEqual([]);
+    expect(fs.existsSync(mine)).toBe(true);
+  });
+
+  it('falls back to the directory mtime when there is no opened marker', () => {
+    const base = path.join(dir, 'text');
+    const stale = otherVersionDir(base);
+    TextIndex.open(stale);
+    fs.utimesSync(stale, (now - 40 * DAY) / 1000, (now - 40 * DAY) / 1000);
+
+    expect(pruneStaleTextIndexDirs(base, { now, maxIdleMs: 30 * DAY })).toEqual([stale]);
+  });
+
+  it('ignores a look-alike directory that is not a tantivy index', () => {
+    const base = path.join(dir, 'text');
+    const impostor = otherVersionDir(base);
+    fs.mkdirSync(impostor);
+    fs.writeFileSync(path.join(impostor, 'notes.txt'), 'keep me');
+    fs.utimesSync(impostor, (now - 400 * DAY) / 1000, (now - 400 * DAY) / 1000);
+
+    expect(pruneStaleTextIndexDirs(base, { now, maxIdleMs: 30 * DAY })).toEqual([]);
+    expect(fs.existsSync(impostor)).toBe(true);
+  });
+
+  it('is a no-op when the base directory does not exist yet', () => {
+    expect(pruneStaleTextIndexDirs(path.join(dir, 'nowhere', 'text'), { now, maxIdleMs: 30 * DAY })).toEqual([]);
+  });
+});
+
+describe('openVersionedTextIndex housekeeping', () => {
+  it('records that this version was opened, so a later build can tell it is still in use', () => {
+    const base = path.join(dir, 'text');
+
+    const index = openVersionedTextIndex(base);
+
+    expect(fs.existsSync(path.join(index.directory, OPENED_MARKER))).toBe(true);
+  });
+
+  it('prunes stale directories of other versions on the way', () => {
+    const base = path.join(dir, 'text');
+    const current = TextIndex.open(path.join(dir, 'probe')).version;
+    const stale = `${base}-v${current + 1}`;
+    TextIndex.open(stale);
+    const longAgo = (Date.now() - 400 * 24 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(stale, longAgo, longAgo);
+
+    openVersionedTextIndex(base);
+
+    expect(fs.existsSync(stale)).toBe(false);
   });
 });

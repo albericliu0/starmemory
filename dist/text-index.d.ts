@@ -31,8 +31,24 @@ export declare function versionedTextIndexDir(basePath: string): string;
  * meta.json) is removed; anything else at that path is not ours to touch.
  * Returns true when something was removed. */
 export declare function removeLegacyTextIndex(basePath: string): boolean;
+/** Touched every time a build opens its own directory. Tantivy never writes on
+ * open, so without this there would be no record of "someone still uses this". */
+export declare const OPENED_MARKER = ".starmemory-opened";
+/** How long another version's directory may go unopened before it is pruned. */
+export declare const TEXT_INDEX_IDLE_MS: number;
+/** Remove the index directories of *other* schema versions that nobody has
+ * opened for `maxIdleMs`. This build's own directory is never a candidate, so
+ * a machine that sat idle for months comes back with its index intact. An
+ * older build that is still installed keeps touching its directory on every
+ * start, which is exactly what keeps that directory alive. Returns what was
+ * removed. */
+export declare function pruneStaleTextIndexDirs(basePath: string, { now, maxIdleMs }?: {
+    now?: number;
+    maxIdleMs?: number;
+}): string[];
 /** What the CLI and the MCP server call: open this build's own index directory
- * under the configured base path, tidying up the pre-versioning one if present. */
+ * under the configured base path, record the open, tidy up the pre-versioning
+ * directory if present, and prune other versions nobody uses any more. */
 export declare function openVersionedTextIndex(basePath: string): TextIndex;
 export declare class TextIndex {
     private readonly native;

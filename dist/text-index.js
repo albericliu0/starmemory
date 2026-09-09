@@ -51,11 +51,69 @@ export function removeLegacyTextIndex(basePath) {
     fs.rmSync(basePath, { recursive: true, force: true });
     return true;
 }
+/** Touched every time a build opens its own directory. Tantivy never writes on
+ * open, so without this there would be no record of "someone still uses this". */
+export const OPENED_MARKER = '.starmemory-opened';
+/** How long another version's directory may go unopened before it is pruned. */
+export const TEXT_INDEX_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+function markOpened(directory) {
+    const marker = path.join(directory, OPENED_MARKER);
+    fs.writeFileSync(marker, '');
+    const now = new Date();
+    fs.utimesSync(marker, now, now);
+}
+function lastOpenedMs(directory) {
+    const marker = path.join(directory, OPENED_MARKER);
+    // Directories from before the marker existed have only their own mtime to go by.
+    const probe = fs.existsSync(marker) ? marker : directory;
+    return fs.statSync(probe).mtimeMs;
+}
+/** Remove the index directories of *other* schema versions that nobody has
+ * opened for `maxIdleMs`. This build's own directory is never a candidate, so
+ * a machine that sat idle for months comes back with its index intact. An
+ * older build that is still installed keeps touching its directory on every
+ * start, which is exactly what keeps that directory alive. Returns what was
+ * removed. */
+export function pruneStaleTextIndexDirs(basePath, { now = Date.now(), maxIdleMs = TEXT_INDEX_IDLE_MS } = {}) {
+    const parent = path.dirname(basePath);
+    const mine = versionedTextIndexDir(basePath);
+    const pattern = new RegExp(`^${escapeRegExp(path.basename(basePath))}-v\\d+$`);
+    let entries;
+    try {
+        entries = fs.readdirSync(parent, { withFileTypes: true });
+    }
+    catch {
+        return [];
+    }
+    const removed = [];
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !pattern.test(entry.name))
+            continue;
+        const candidate = path.join(parent, entry.name);
+        if (candidate === mine)
+            continue;
+        // Only ever delete something that really is a tantivy index, as removeLegacyTextIndex does.
+        if (!fs.existsSync(path.join(candidate, 'meta.json')))
+            continue;
+        if (now - lastOpenedMs(candidate) <= maxIdleMs)
+            continue;
+        fs.rmSync(candidate, { recursive: true, force: true });
+        removed.push(candidate);
+    }
+    return removed;
+}
+function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 /** What the CLI and the MCP server call: open this build's own index directory
- * under the configured base path, tidying up the pre-versioning one if present. */
+ * under the configured base path, record the open, tidy up the pre-versioning
+ * directory if present, and prune other versions nobody uses any more. */
 export function openVersionedTextIndex(basePath) {
     removeLegacyTextIndex(basePath);
-    return TextIndex.open(versionedTextIndexDir(basePath));
+    const index = TextIndex.open(versionedTextIndexDir(basePath));
+    markOpened(index.directory);
+    pruneStaleTextIndexDirs(basePath);
+    return index;
 }
 export class TextIndex {
     native;
