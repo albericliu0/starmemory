@@ -176,6 +176,12 @@ export class TextIndex {
     this.native.deleteAll();
   }
 
+  /** Queue these exchanges for removal; commit() applies it. Needs the writer. */
+  deleteExchanges(ids: number[]): void {
+    if (ids.length === 0) return;
+    this.native.deleteDocuments(Float64Array.from(ids));
+  }
+
   search(query: string, limit: number, filter: TextSearchFilter = {}): TextHit[] {
     if (limit <= 0) return [];
     return this.native.search(query, limit, {

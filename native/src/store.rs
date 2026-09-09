@@ -116,6 +116,9 @@ pub struct Store {
 /// Code was the only harness there was.
 pub const DEFAULT_HARNESS: &str = "claude";
 
+/// Meta key holding the id high water mark; see Store::next_id_in.
+const NEXT_ID_KEY: &str = "next_id";
+
 /// Secondary-index key: `<text>\0<id BE>`. The NUL keeps "proj" from matching
 /// "proj2" on a prefix scan; the big-endian id keeps ids ordered within a text.
 fn idx_key(text: &str, id: u64) -> Vec<u8> {
@@ -181,7 +184,7 @@ impl Store {
             Some(k) => self.meta.get(&wtxn, k)?.and_then(|v| v.parse().ok()).unwrap_or(0),
             None => 0,
         };
-        let mut next = self.exchanges.last(&wtxn)?.map(|(id, _)| id + 1).unwrap_or(0);
+        let mut next = self.next_id_in(&wtxn)?;
 
         let mut out = InsertOutcome::default();
         let mut max_line_end = cursor;
@@ -217,8 +220,52 @@ impl Store {
         if let (Some(k), false) = (cursor_key, out.ids.is_empty()) {
             self.meta.put(&mut wtxn, k, &max_line_end.to_string())?;
         }
+        if !out.ids.is_empty() {
+            self.meta.put(&mut wtxn, NEXT_ID_KEY, &next.to_string())?;
+        }
         wtxn.commit()?;
         Ok(out)
+    }
+
+    /// The next id to hand out: one past the highest row, or the recorded high
+    /// water mark, whichever is larger. The mark is what keeps an id from being
+    /// reused after delete() removes the newest rows; the text index's cursor
+    /// and every stored reference assume an id names one exchange forever.
+    fn next_id_in(&self, txn: &heed::RoTxn) -> Result<u64> {
+        let from_rows = self.exchanges.last(txn)?.map(|(id, _)| id + 1).unwrap_or(0);
+        let from_mark = self.meta.get(txn, NEXT_ID_KEY)?.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        Ok(from_rows.max(from_mark))
+    }
+
+    /// Remove rows for good: the record, its vector, and its entry in every
+    /// secondary index, in one write transaction. Index entries are found by
+    /// scanning for the id suffix rather than rebuilt from the record, so a row
+    /// stored by any earlier build is cleared correctly. Ids that do not exist
+    /// are skipped. Returns how many rows were removed. Ids are never reused,
+    /// so sync cursors and the text index's cursor stay valid.
+    pub fn delete(&self, ids: &[u64]) -> Result<u64> {
+        let wanted: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        let mut wtxn = self.env.write_txn()?;
+        let mut removed = 0;
+        for &id in &wanted {
+            if self.exchanges.delete(&mut wtxn, &id)? {
+                removed += 1;
+            }
+            self.vectors.delete(&mut wtxn, &id)?;
+        }
+        for index in [&self.idx_project, &self.idx_session, &self.idx_harness, &self.idx_time] {
+            let doomed: Vec<Vec<u8>> = index
+                .iter(&wtxn)?
+                .filter_map(|item| item.ok())
+                .filter(|(key, _)| key.len() >= 8 && wanted.contains(&id_of(key)))
+                .map(|(key, _)| key.to_vec())
+                .collect();
+            for key in doomed {
+                index.delete(&mut wtxn, &key)?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(removed)
     }
 
     pub fn get(&self, id: u64) -> Result<Option<String>> {
@@ -352,7 +399,7 @@ impl Store {
 
     pub fn next_id(&self) -> Result<u64> {
         let rtxn = self.env.read_txn()?;
-        Ok(self.exchanges.last(&rtxn)?.map(|(id, _)| id + 1).unwrap_or(0))
+        self.next_id_in(&rtxn)
     }
 
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
@@ -475,6 +522,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(store.filter_ids(&f).unwrap(), Some(vec![mid, late_a]));
+    }
+
+    #[test]
+    fn delete_removes_the_row_its_vector_and_every_index_entry_and_leaves_neighbours_alone() {
+        let (_d, store) = open();
+        let mut keep = row(1);
+        keep.project = "keep".into();
+        keep.session_id = Some("s-keep".into());
+        let mut gone = row(2);
+        gone.project = "gone".into();
+        gone.session_id = Some("s-gone".into());
+        gone.harness = Some("codex".into());
+        gone.timestamp = "2026-02-02T00:00:00.000Z".into();
+        let ids = store.insert(&[keep, gone], None).unwrap().ids;
+        let (keep_id, gone_id) = (ids[0], ids[1]);
+
+        assert_eq!(store.delete(&[gone_id, 999]).unwrap(), 1);
+
+        assert!(store.get(gone_id).unwrap().is_none());
+        assert!(store.get_vector(gone_id).unwrap().is_none());
+        let by = |f: IdFilter| store.filter_ids(&f).unwrap().unwrap_or_default();
+        assert!(by(IdFilter { project: Some("gone".into()), ..Default::default() }).is_empty());
+        assert!(by(IdFilter { session_id: Some("s-gone".into()), ..Default::default() }).is_empty());
+        assert!(by(IdFilter { harness: Some("codex".into()), ..Default::default() }).is_empty());
+        assert!(by(IdFilter { after: Some("2026-02-01".into()), before: Some("2026-02-03".into()), ..Default::default() }).is_empty());
+        assert!(store.get(keep_id).unwrap().is_some());
+        assert_eq!(by(IdFilter { project: Some("keep".into()), ..Default::default() }), vec![keep_id]);
+        // Ids keep climbing past the deleted one.
+        assert_eq!(store.next_id().unwrap(), gone_id + 1);
     }
 
     #[test]

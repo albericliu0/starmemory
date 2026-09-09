@@ -65,6 +65,8 @@ export declare class TextIndex {
     /** fsyncs and republishes the reader. Expensive, so call it once per batch. */
     commit(): void;
     deleteAll(): void;
+    /** Queue these exchanges for removal; commit() applies it. Needs the writer. */
+    deleteExchanges(ids: number[]): void;
     search(query: string, limit: number, filter?: TextSearchFilter): TextHit[];
     numDocs(): number;
 }

@@ -30,6 +30,10 @@ export declare function insertExchangesForFile(store: StoreHandle, archivePath: 
     exchange: Omit<ConversationExchange, 'id'>;
     embedding: Float32Array | null;
 }[]): FileInsertResult;
+/** Remove exchanges for good (design doc archive-and-summaries §13). The
+ * vector index is a cache rebuilt by the caller; the text index has its own
+ * deleteExchanges. Returns how many rows existed. */
+export declare function deleteExchanges(store: StoreHandle, ids: number[]): number;
 export declare function nextId(store: StoreHandle): number;
 export declare function getExchange(store: StoreHandle, id: number): ConversationExchange | undefined;
 /** A vector written by a different embedding model has a different length.

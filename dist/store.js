@@ -60,6 +60,14 @@ export function insertExchangesForFile(store, archivePath, items) {
         return { ids: [], skipped: 0 };
     return store.native.insert(items.map(({ exchange, embedding }) => rowOf(exchange, embedding)), syncCursorKey(archivePath));
 }
+/** Remove exchanges for good (design doc archive-and-summaries §13). The
+ * vector index is a cache rebuilt by the caller; the text index has its own
+ * deleteExchanges. Returns how many rows existed. */
+export function deleteExchanges(store, ids) {
+    if (ids.length === 0)
+        return 0;
+    return store.native.delete(Float64Array.from(ids));
+}
 export function nextId(store) {
     return store.native.nextId();
 }
