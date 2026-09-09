@@ -11,6 +11,7 @@ import {
   filterIds,
   getVector,
   exchangesFrom,
+  reindexHarness,
   type StoreHandle,
 } from '../src/store.js';
 import type { ConversationExchange } from '../src/types.js';
@@ -128,6 +129,50 @@ describe('subagent turns', () => {
     const id = insert({ isSidechain: false });
 
     expect(getVector(store, id, DIM)).toBeDefined();
+  });
+});
+
+// Both harnesses write into one store (design doc §16). The tag has to be
+// answerable from a secondary index like project is, because "only what I did
+// in Codex" is a filter on the hot path of a query.
+describe('harness filter', () => {
+  it('narrows to one harness', () => {
+    const codex = insert({ harness: 'codex' });
+    insert({ harness: 'claude' });
+
+    expect(filterIds(store, { harness: 'codex' })).toEqual([codex]);
+  });
+
+  it('reads an exchange with no harness field as claude, the only harness that existed before', () => {
+    const untagged = insert({ harness: undefined });
+
+    expect(filterIds(store, { harness: 'claude' })).toEqual([untagged]);
+  });
+
+  it('intersects the harness filter with a project filter', () => {
+    const match = insert({ harness: 'codex', project: 'proj-a' });
+    insert({ harness: 'codex', project: 'proj-b' });
+    insert({ harness: 'claude', project: 'proj-a' });
+
+    expect(filterIds(store, { harness: 'codex', project: 'proj-a' })).toEqual([match]);
+  });
+});
+
+describe('reindexHarness', () => {
+  it('gives rows stored before the harness index existed an index entry', () => {
+    // The native row shape lets a caller omit the harness entirely, which is how
+    // every row written before this change looks in an existing store.
+    const { ids } = store.native.insert(
+      [{ json: JSON.stringify({ project: 'p', timestamp: 't', userMessage: 'q', assistantMessage: 'a', archivePath: '/f', lineStart: 1, lineEnd: 2, embeddingVersion: 1 }),
+         project: 'p', timestamp: 't', lineEnd: 2, isSidechain: false }],
+      null
+    );
+    expect(filterIds(store, { harness: 'claude' })).toEqual([]);
+
+    const reindexed = reindexHarness(store);
+
+    expect(reindexed).toBe(1);
+    expect(filterIds(store, { harness: 'claude' })).toEqual(ids);
   });
 });
 

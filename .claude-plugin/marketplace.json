@@ -5,15 +5,15 @@
     "email": "wei.liu@phoenixdata.ai"
   },
   "metadata": {
-    "description": "Hybrid BM25 + vector recall for Claude Code conversations",
-    "version": "0.1.0"
+    "description": "Hybrid BM25 + vector recall for Claude Code and Codex conversations",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "starmemory",
       "source": "./",
-      "description": "Hybrid recall for Claude Code conversations: Tantivy BM25 + faiss HNSW over LMDB, fused by reciprocal rank. Prebuilt for darwin-arm64.",
-      "version": "0.1.0"
+      "description": "Hybrid recall for Claude Code and Codex conversations: Tantivy BM25 + usearch HNSW over LMDB, fused by reciprocal rank. Prebuilt for darwin-arm64.",
+      "version": "0.2.0"
     }
   ]
 }

@@ -3,8 +3,8 @@
     "starmemory": {
       "command": "sh",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/cli/run-node.sh",
-        "${CLAUDE_PLUGIN_ROOT}/cli/mcp-server.mjs"
+        "./cli/run-node.sh",
+        "./cli/mcp-server.mjs"
       ],
       "cwd": ".",
       "env_vars": [

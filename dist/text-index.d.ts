@@ -1,11 +1,12 @@
 import { type NativeTextDoc } from './addon.js';
-import type { ConversationExchange } from './types.js';
+import type { ConversationExchange, Harness } from './types.js';
 /** True when the addon has been built. Callers that can still work without BM25
  * (see store.ts's substring fallback) use this instead of catching a throw. */
 export declare function isTextIndexAvailable(): boolean;
 export interface TextSearchFilter {
     project?: string;
     sessionId?: string;
+    harness?: Harness;
     /** Inclusive ISO 8601 bounds, matching SearchOptions. */
     after?: string;
     before?: string;

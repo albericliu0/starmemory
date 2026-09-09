@@ -1,5 +1,8 @@
 import { type NativeStore } from './addon.js';
-import type { ConversationExchange } from './types.js';
+import type { ConversationExchange, Harness } from './types.js';
+/** What an exchange with no harness tag means: it was written when Claude Code
+ * was the only harness there was (design doc §16). */
+export declare const DEFAULT_HARNESS: Harness;
 export interface StoreHandle {
     native: NativeStore;
     /** Small typed key/value area: cursors and versions. Values are JSON. */
@@ -46,9 +49,15 @@ export declare function allVectors(store: StoreHandle, dim: number): {
 export declare function filterIds(store: StoreHandle, filters: {
     project?: string;
     sessionId?: string;
+    harness?: Harness;
     after?: string;
     before?: string;
 }): number[] | undefined;
+/** Meta key recording that idx_harness has been backfilled once. */
+export declare const HARNESS_INDEX_KEY = "harness_index_version";
+/** Give rows stored before Codex support a harness index entry, so a harness
+ * filter does not silently drop them. Returns the number of rows walked. */
+export declare function reindexHarness(store: StoreHandle): number;
 /** Every exchange with an id at or above `fromId`, in id order (design doc §09). */
 export declare function exchangesFrom(store: StoreHandle, fromId: number): ConversationExchange[];
 /** Substring scan, newest first. The fallback when the BM25 addon is missing;
@@ -58,5 +67,6 @@ export declare function textSearch(store: StoreHandle, query: string, opts: {
     before?: string;
     project?: string;
     sessionId?: string;
+    harness?: Harness;
     limit: number;
 }): ConversationExchange[];

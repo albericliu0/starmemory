@@ -1,4 +1,4 @@
-import type { ParsedExchange } from './types.js';
+import type { Harness, ParsedExchange } from './types.js';
 export declare function isInjectedUserTurn(entry: {
     promptSource?: string;
     isMeta?: boolean;
@@ -7,6 +7,9 @@ export declare function isInjectedUserTurn(entry: {
  * which is the honest answer for a system reminder: it is an instruction to the
  * model, not something anyone would search for. */
 export declare function payloadOfInjectedTurn(text: string): string;
+/** Reads the first parseable line and decides which format the file is in.
+ * Unknown or empty files are read as Claude, the format that existed first. */
+export declare function detectHarness(filePath: string): Promise<Harness>;
 export declare function parseConversation(filePath: string, project: string, archivePath: string): Promise<ParsedExchange[]>;
 /** Derives a project name the same way episodic-memory does: the JSONL file's
  * parent directory name (Claude Code's sanitized-cwd slug). */

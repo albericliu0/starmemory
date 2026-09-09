@@ -5,7 +5,8 @@
 // become the epoch milliseconds the native range filter works in.
 import fs from 'node:fs';
 import { addon, isAddonAvailable, type NativeTextDoc, type NativeTextIndex } from './addon.js';
-import type { ConversationExchange } from './types.js';
+import { DEFAULT_HARNESS } from './store.js';
+import type { ConversationExchange, Harness } from './types.js';
 
 /** True when the addon has been built. Callers that can still work without BM25
  * (see store.ts's substring fallback) use this instead of catching a throw. */
@@ -16,6 +17,7 @@ export function isTextIndexAvailable(): boolean {
 export interface TextSearchFilter {
   project?: string;
   sessionId?: string;
+  harness?: Harness;
   /** Inclusive ISO 8601 bounds, matching SearchOptions. */
   after?: string;
   before?: string;
@@ -35,6 +37,7 @@ export function documentForExchange(exchange: ConversationExchange): NativeTextD
     text: `${exchange.userMessage}\n\n${exchange.assistantMessage}`,
     project: exchange.project,
     sessionId: exchange.sessionId ?? '',
+    harness: exchange.harness ?? DEFAULT_HARNESS,
     timestampMs: toEpochMs(exchange.timestamp) ?? 0,
     isSidechain: exchange.isSidechain === true,
   };
@@ -88,6 +91,7 @@ export class TextIndex {
     return this.native.search(query, limit, {
       project: filter.project,
       sessionId: filter.sessionId,
+      harness: filter.harness,
       afterMs: toEpochMs(filter.after),
       beforeMs: toEpochMs(filter.before),
     });

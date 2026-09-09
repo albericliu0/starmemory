@@ -1,9 +1,11 @@
-// Parses Claude Code's JSONL transcript format (~/.claude/projects/<slug>/<uuid>.jsonl)
-// into exchanges. Ported from episodic-memory's src/parser.ts, trimmed to
-// Claude-only (no Codex) and to the fields this engine actually persists --
-// see design doc §07 "read 完整对话" for why raw-file reading stays untouched
-// regardless of storage engine.
+// Parses transcripts into exchanges. Two formats, told apart per file:
+//   - Claude Code: ~/.claude/projects/<slug>/<uuid>.jsonl, one message per line
+//   - Codex: ~/.codex/sessions/**/rollout-*.jsonl, session_meta + response_item lines
+// Ported from episodic-memory's src/parser.ts, trimmed to the fields this engine
+// actually persists -- see design doc §07 "read 完整对话" for why raw-file reading
+// stays untouched regardless of storage engine, and §16 for the two harnesses.
 import fs from 'node:fs';
+import path from 'node:path';
 import readline from 'node:readline';
 /** How a person's own message is marked. This is a whitelist on purpose: a
  * blacklist of markers is always one Claude Code release behind, and some
@@ -71,7 +73,130 @@ function extractText(content) {
         .map((block) => block.text)
         .join('\n');
 }
+/** The line types only a Codex rollout has. A Claude Code transcript line has
+ * `type: "user" | "assistant" | ...` and a `message`, never a `payload`. */
+const CODEX_LINE_TYPES = new Set(['session_meta', 'turn_context', 'response_item', 'event_msg', 'compacted']);
+/** Reads the first parseable line and decides which format the file is in.
+ * Unknown or empty files are read as Claude, the format that existed first. */
+export async function detectHarness(filePath) {
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    try {
+        for await (const line of rl) {
+            if (!line.trim())
+                continue;
+            try {
+                const parsed = JSON.parse(line);
+                return parsed.payload && parsed.type && CODEX_LINE_TYPES.has(parsed.type) ? 'codex' : 'claude';
+            }
+            catch {
+                continue;
+            }
+        }
+    }
+    finally {
+        rl.close();
+    }
+    return 'claude';
+}
 export async function parseConversation(filePath, project, archivePath) {
+    if ((await detectHarness(filePath)) === 'codex') {
+        return parseCodexConversation(filePath, project, archivePath);
+    }
+    return parseClaudeConversation(filePath, project, archivePath);
+}
+/** Codex message content is a list of typed blocks (`input_text`, `output_text`).
+ * Anything carrying a `text` string counts; the block type names have changed
+ * across Codex releases and none of them is worth filtering on. */
+function codexText(content) {
+    if (typeof content === 'string')
+        return content;
+    if (!Array.isArray(content))
+        return '';
+    return content
+        .filter((b) => b && typeof b === 'object' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('\n');
+}
+/** Codex rollouts. The project is the basename of the session's `cwd`, which is
+ * the closest thing to Claude Code's per-project folder; the caller's guess
+ * from the file path is only the fallback. Tool calls and reasoning blocks are
+ * skipped: they are not what a person would search for. */
+async function parseCodexConversation(filePath, fallbackProject, archivePath) {
+    const exchanges = [];
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    let lineNumber = 0;
+    let project = fallbackProject;
+    let sessionId;
+    let gitBranch;
+    let current = null;
+    const finalize = () => {
+        if (current && current.assistantMessages.length > 0) {
+            exchanges.push({
+                harness: 'codex',
+                project,
+                sessionId,
+                gitBranch,
+                timestamp: current.timestamp,
+                userMessage: current.userMessage,
+                userIsInjected: false,
+                assistantMessage: current.assistantMessages.join('\n\n'),
+                archivePath,
+                lineStart: current.userLine,
+                lineEnd: current.lastAssistantLine,
+            });
+        }
+        current = null;
+    };
+    for await (const line of rl) {
+        lineNumber++;
+        if (!line.trim())
+            continue;
+        let parsed;
+        try {
+            parsed = JSON.parse(line);
+        }
+        catch {
+            continue;
+        }
+        const payload = parsed.payload;
+        if (!payload)
+            continue;
+        if (parsed.type === 'session_meta' || parsed.type === 'turn_context') {
+            if (payload.cwd)
+                project = path.basename(payload.cwd) || project;
+            if (parsed.type === 'session_meta') {
+                sessionId = payload.id ?? sessionId;
+                gitBranch = payload.git?.branch ?? gitBranch;
+            }
+            continue;
+        }
+        if (parsed.type !== 'response_item' || payload.type !== 'message')
+            continue;
+        const text = codexText(payload.content);
+        if (!text.trim())
+            continue;
+        const timestamp = parsed.timestamp ?? new Date().toISOString();
+        if (payload.role === 'user') {
+            finalize();
+            current = {
+                userMessage: text,
+                userIsInjected: false,
+                userLine: lineNumber,
+                assistantMessages: [],
+                lastAssistantLine: lineNumber,
+                timestamp,
+            };
+        }
+        else if (payload.role === 'assistant' && current) {
+            current.assistantMessages.push(text);
+            current.lastAssistantLine = lineNumber;
+            current.timestamp = timestamp;
+        }
+    }
+    finalize();
+    return exchanges;
+}
+async function parseClaudeConversation(filePath, project, archivePath) {
     const exchanges = [];
     const rl = readline.createInterface({
         input: fs.createReadStream(filePath),
@@ -82,6 +207,7 @@ export async function parseConversation(filePath, project, archivePath) {
     const finalize = () => {
         if (current && current.assistantMessages.length > 0) {
             exchanges.push({
+                harness: 'claude',
                 project,
                 sessionId: current.sessionId,
                 gitBranch: current.gitBranch,

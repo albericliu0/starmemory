@@ -1,14 +1,23 @@
-// Incremental indexing of Claude Code's local JSONL transcripts -- design doc
-// §01/§08. Multiple `sync` processes can run concurrently (one per SessionStart
-// hook firing) with no app-level lock: LMDB's single-writer transaction is
-// enforced by the engine itself (flock), unlike episodic-memory's hand-rolled
-// file-lock.ts.
+// Incremental indexing of the local JSONL transcripts of both harnesses --
+// design doc §01/§08/§16. Multiple `sync` processes can run concurrently (one
+// per SessionStart hook firing, from Claude Code or from Codex) with no
+// app-level lock: LMDB's single-writer transaction is enforced by the engine
+// itself (flock), unlike episodic-memory's hand-rolled file-lock.ts.
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseConversation, projectFromPath } from './parser.js';
 import { EMBEDDING_MODEL, generateExchangeEmbedding } from './embeddings.js';
-import { exchangesFrom, insertExchangesForFile, putVector, syncCursorKey } from './store.js';
-const DEFAULT_TRANSCRIPTS_DIR = path.join(process.env.HOME ?? '', '.claude', 'projects');
+import { HARNESS_INDEX_KEY, exchangesFrom, insertExchangesForFile, putVector, reindexHarness, syncCursorKey, } from './store.js';
+/** Where each harness keeps its transcripts. The overrides are the ones the
+ * harnesses themselves honour, so a profile that moved its config dir still
+ * gets indexed. Missing directories are fine: walkJsonlFiles yields nothing. */
+export function defaultTranscriptDirs(env = process.env) {
+    const home = env.HOME ?? '';
+    return [
+        path.join(env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'), 'projects'),
+        path.join(env.CODEX_HOME ?? path.join(home, '.codex'), 'sessions'),
+    ];
+}
 /** Which embedding model every vector in the store came from. */
 export const EMBEDDING_MODEL_KEY = 'embedding_model';
 /** Bring every stored vector onto the current embedding model.
@@ -87,17 +96,28 @@ function* walkJsonlFiles(dir) {
         }
     }
 }
-/** Scans every transcript, inserts exchanges past each file's last-synced
- * cursor, and rebuilds the vector index once at the end (design doc §07:
- * rebuilding from scratch is a sub-second operation at this scale, so there's
- * no need for incremental graph maintenance). */
-export async function syncAll(store, index, transcriptsDir = DEFAULT_TRANSCRIPTS_DIR, textIndex) {
+function* walkAll(dirs) {
+    for (const dir of dirs)
+        yield* walkJsonlFiles(dir);
+}
+/** Scans every transcript of every harness, inserts exchanges past each file's
+ * last-synced cursor, and rebuilds the vector index once at the end (design doc
+ * §07: rebuilding from scratch is a sub-second operation at this scale, so
+ * there's no need for incremental graph maintenance). */
+export async function syncAll(store, index, transcriptsDirs = defaultTranscriptDirs(), textIndex) {
     let filesScanned = 0;
     let exchangesIndexed = 0;
     // Before touching anything else: if the model changed, every existing vector
     // is stale and the graph built from them would be meaningless.
     const migration = await ensureEmbeddingModel(store);
-    for (const filePath of walkJsonlFiles(transcriptsDir)) {
+    // Rows written before Codex support have no harness index entry. Backfill
+    // once; the key makes every later sync skip the walk (design doc §16).
+    if (store.meta.get(HARNESS_INDEX_KEY) !== 1) {
+        reindexHarness(store);
+        store.meta.putSync(HARNESS_INDEX_KEY, 1);
+    }
+    const dirs = Array.isArray(transcriptsDirs) ? transcriptsDirs : [transcriptsDirs];
+    for (const filePath of walkAll(dirs)) {
         filesScanned++;
         const project = projectFromPath(filePath);
         // This read is only an optimisation, to avoid embedding rows another sync

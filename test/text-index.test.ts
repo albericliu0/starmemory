@@ -120,6 +120,25 @@ describe('TextIndex', () => {
     expect(index.search('compaction', 10, { project: 'proj-b' }).map((h) => h.id)).toEqual([2]);
   });
 
+  it('applies a harness filter, so "only what I did in Codex" works on the text path too', () => {
+    const index = writableIndex();
+    index.addExchanges([
+      exchange({ id: 1, harness: 'claude' }),
+      exchange({ id: 2, harness: 'codex' }),
+    ]);
+    index.commit();
+
+    expect(index.search('compaction', 10, { harness: 'codex' }).map((h) => h.id)).toEqual([2]);
+  });
+
+  it('indexes an untagged exchange as claude, matching the store', () => {
+    const index = writableIndex();
+    index.addExchanges([exchange({ id: 1, harness: undefined })]);
+    index.commit();
+
+    expect(index.search('compaction', 10, { harness: 'claude' }).map((h) => h.id)).toEqual([1]);
+  });
+
   it('applies an ISO date range filter', () => {
     const index = writableIndex();
     index.addExchanges([

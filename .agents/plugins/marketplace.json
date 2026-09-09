@@ -1,0 +1,19 @@
+{
+  "name": "starmemory-dev",
+  "interface": {
+    "displayName": "StarMemory Dev"
+  },
+  "plugins": [
+    {
+      "name": "starmemory",
+      "source": {
+        "source": "url",
+        "url": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      }
+    }
+  ]
+}

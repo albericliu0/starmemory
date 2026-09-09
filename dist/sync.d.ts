@@ -1,6 +1,10 @@
 import { type StoreHandle } from './store.js';
 import { VectorIndex } from './vector-index.js';
 import { TextIndex } from './text-index.js';
+/** Where each harness keeps its transcripts. The overrides are the ones the
+ * harnesses themselves honour, so a profile that moved its config dir still
+ * gets indexed. Missing directories are fine: walkJsonlFiles yields nothing. */
+export declare function defaultTranscriptDirs(env?: NodeJS.ProcessEnv): string[];
 /** Which embedding model every vector in the store came from. */
 export declare const EMBEDDING_MODEL_KEY = "embedding_model";
 export interface EmbeddingMigrationResult {
@@ -44,8 +48,8 @@ export interface SyncResult {
     /** True when another process held the BM25 writer lock (design doc §09). */
     textSkipped: boolean;
 }
-/** Scans every transcript, inserts exchanges past each file's last-synced
- * cursor, and rebuilds the vector index once at the end (design doc §07:
- * rebuilding from scratch is a sub-second operation at this scale, so there's
- * no need for incremental graph maintenance). */
-export declare function syncAll(store: StoreHandle, index: VectorIndex, transcriptsDir?: string, textIndex?: TextIndex): Promise<SyncResult>;
+/** Scans every transcript of every harness, inserts exchanges past each file's
+ * last-synced cursor, and rebuilds the vector index once at the end (design doc
+ * §07: rebuilding from scratch is a sub-second operation at this scale, so
+ * there's no need for incremental graph maintenance). */
+export declare function syncAll(store: StoreHandle, index: VectorIndex, transcriptsDirs?: string | string[], textIndex?: TextIndex): Promise<SyncResult>;

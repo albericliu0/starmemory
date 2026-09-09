@@ -6,8 +6,11 @@
 // The one semantic that matters lives in Rust: insertExchangesForFile() reads
 // the per-file cursor, skips rows at or below it, inserts the rest and advances
 // it inside ONE write transaction, which is what stops two concurrent syncs
-// from storing the same exchange twice (design doc §17 item 3).
+// from storing the same exchange twice (design doc §16 item 3).
 import { addon } from './addon.js';
+/** What an exchange with no harness tag means: it was written when Claude Code
+ * was the only harness there was (design doc §16). */
+export const DEFAULT_HARNESS = 'claude';
 export function openStore(dbPath) {
     const native = addon().StoreHandle.open(dbPath);
     return {
@@ -42,6 +45,7 @@ function rowOf(exchange, embedding) {
         isSidechain: exchange.isSidechain === true,
         // Subagent turns never get a vector; the store enforces it too.
         embedding: embedding ?? undefined,
+        harness: exchange.harness ?? DEFAULT_HARNESS,
     };
 }
 /** Insert one exchange with no cursor bookkeeping. For tests and one-off use;
@@ -86,6 +90,13 @@ export function filterIds(store, filters) {
     const ids = store.native.filterIds(filters);
     return ids === null ? undefined : Array.from(ids);
 }
+/** Meta key recording that idx_harness has been backfilled once. */
+export const HARNESS_INDEX_KEY = 'harness_index_version';
+/** Give rows stored before Codex support a harness index entry, so a harness
+ * filter does not silently drop them. Returns the number of rows walked. */
+export function reindexHarness(store) {
+    return store.native.reindexHarness();
+}
 /** Every exchange with an id at or above `fromId`, in id order (design doc §09). */
 export function exchangesFrom(store, fromId) {
     return store.native.exchangesFrom(fromId).map((raw) => JSON.parse(raw));
@@ -107,6 +118,8 @@ export function textSearch(store, query, opts) {
         if (opts.project && exchange.project !== opts.project)
             continue;
         if (opts.sessionId && exchange.sessionId !== opts.sessionId)
+            continue;
+        if (opts.harness && (exchange.harness ?? DEFAULT_HARNESS) !== opts.harness)
             continue;
         if (exchange.userMessage.toLowerCase().includes(q) || exchange.assistantMessage.toLowerCase().includes(q)) {
             results.push(exchange);

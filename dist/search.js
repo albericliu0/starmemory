@@ -48,7 +48,7 @@ export const CANDIDATE_DEPTH = 50;
  * `textIndex` is optional: without the compiled addon we fall back to the old
  * substring scan, which still answers exact-match queries. */
 export async function search(store, index, query, options = {}, textIndex) {
-    const { mode = 'hybrid', limit = 10, after, before, project, sessionId } = options;
+    const { mode = 'hybrid', limit = 10, after, before, project, sessionId, harness } = options;
     const resolvedMode = mode === 'both' ? 'hybrid' : mode;
     const useVector = resolvedMode === 'vector' || resolvedMode === 'hybrid';
     const useText = resolvedMode === 'text' || resolvedMode === 'hybrid';
@@ -61,7 +61,7 @@ export async function search(store, index, query, options = {}, textIndex) {
         // The filter is applied inside the graph traversal via ArrayIdFilter, so
         // there is no over-fetch-and-trim. Subagent turns never reach here at all:
         // store.ts does not give them a vector (design doc §07).
-        const ids = filterIds(store, { project, sessionId, after, before });
+        const ids = filterIds(store, { project, sessionId, harness, after, before });
         const queryEmbedding = await generateQueryEmbedding(query);
         const hits = index.search(queryEmbedding, depth, ids);
         for (const { id, score } of hits)
@@ -70,8 +70,8 @@ export async function search(store, index, query, options = {}, textIndex) {
     }
     if (useText) {
         const ids = textIndex
-            ? textIndex.search(query, depth, { project, sessionId, after, before }).map((h) => h.id)
-            : textSearch(store, query, { after, before, project, sessionId, limit: depth }).map((e) => e.id);
+            ? textIndex.search(query, depth, { project, sessionId, harness, after, before }).map((h) => h.id)
+            : textSearch(store, query, { after, before, project, sessionId, harness, limit: depth }).map((e) => e.id);
         textList = lists.push(ids) - 1;
     }
     const results = [];
@@ -96,8 +96,8 @@ export async function search(store, index, query, options = {}, textIndex) {
  * search, keep only exchanges present in every concept's hit set, rank by the
  * average of the per-concept scores. */
 export async function searchMultipleConcepts(store, index, concepts, options = {}) {
-    const { limit = 10, project, sessionId } = options;
-    const ids = filterIds(store, { project, sessionId });
+    const { limit = 10, project, sessionId, harness } = options;
+    const ids = filterIds(store, { project, sessionId, harness });
     const perConcept = await Promise.all(concepts.map(async (concept) => {
         const embedding = await generateQueryEmbedding(concept);
         return index.search(embedding, limit * 5, ids);

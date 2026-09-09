@@ -1,7 +1,13 @@
+/** Which coding agent wrote the transcript an exchange came from. Both share one
+ * store (design doc §16); the tag is what lets a search ask for only one side. */
+export type Harness = 'claude' | 'codex';
+
 /** A single user/assistant exchange, mirroring episodic-memory's ConversationExchange
  * (see design doc §05/§07) but trimmed to what this engine actually persists. */
 export interface ConversationExchange {
   id: number;
+  /** Absent on rows stored before Codex support; read those as `claude`. */
+  harness?: Harness;
   project: string;
   sessionId?: string;
   gitBranch?: string;
@@ -33,6 +39,7 @@ export interface SearchOptions {
   before?: string;
   project?: string;
   sessionId?: string;
+  harness?: Harness;
 }
 
 export interface SearchResult {

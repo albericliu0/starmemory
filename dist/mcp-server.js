@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// MCP server -- design doc §09 "与 Claude Code 集成". Exposes the same two
-// tools as episodic-memory (search, read) so it's a drop-in replacement from
-// the Claude Code side: hooks.json and tool schemas don't need to change.
+// MCP server -- design doc §10 "与 Claude Code 集成" and §16. Exposes the same
+// two tools as episodic-memory (search, read) so it's a drop-in replacement from
+// the Claude Code side: hooks.json and tool schemas don't need to change. The
+// same server is what Codex launches through .mcp.json; both harnesses read the
+// one store under ~/.config/starmemory.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -29,7 +31,8 @@ function formatResults(results) {
         .map((r, i) => {
         const date = r.exchange.timestamp.slice(0, 10);
         const pct = r.similarity !== undefined ? ` - ${Math.round(r.similarity * 100)}% match` : '';
-        return `${i + 1}. [${r.exchange.project}, ${date}]${pct}\n   "${r.snippet}"\n   Lines ${r.exchange.lineStart}-${r.exchange.lineEnd} in ${r.exchange.archivePath}\n`;
+        const from = r.exchange.harness === 'codex' ? ', codex' : '';
+        return `${i + 1}. [${r.exchange.project}, ${date}${from}]${pct}\n   "${r.snippet}"\n   Lines ${r.exchange.lineStart}-${r.exchange.lineEnd} in ${r.exchange.archivePath}\n`;
     })
         .join('\n');
 }
@@ -47,8 +50,9 @@ function formatMultiConceptResults(results, concepts) {
 const server = new McpServer({ name: 'starmemory', version: '0.1.0' });
 server.registerTool('search', {
     title: 'Search Memory',
-    description: 'Search past Claude Code conversations by semantic similarity, exact text, or both. ' +
-        'Pass a single string for semantic search, or an array of 2-5 concepts for AND matching.',
+    description: 'Search past Claude Code and Codex conversations by semantic similarity, exact text, or both. ' +
+        'Pass a single string for semantic search, or an array of 2-5 concepts for AND matching. ' +
+        'Both harnesses share one memory; set harness to search only one of them.',
     inputSchema: {
         query: z.union([z.string().min(2), z.array(z.string().min(2)).min(2).max(5)]),
         mode: z.enum(['vector', 'text', 'hybrid', 'both']).default('hybrid'),
@@ -57,11 +61,12 @@ server.registerTool('search', {
         before: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         project: z.string().min(1).optional(),
         sessionId: z.string().min(1).optional(),
+        harness: z.enum(['claude', 'codex']).optional(),
     },
-}, async ({ query, mode, limit, after, before, project, sessionId }) => {
+}, async ({ query, mode, limit, after, before, project, sessionId, harness }) => {
     const text = Array.isArray(query)
-        ? formatMultiConceptResults(await searchMultipleConcepts(store, index, query, { limit, project, sessionId }), query)
-        : formatResults(await search(store, index, query, { mode, limit, after, before, project, sessionId }, textIndex));
+        ? formatMultiConceptResults(await searchMultipleConcepts(store, index, query, { limit, project, sessionId, harness }), query)
+        : formatResults(await search(store, index, query, { mode, limit, after, before, project, sessionId, harness }, textIndex));
     return { content: [{ type: 'text', text }] };
 });
 server.registerTool('read', {

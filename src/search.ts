@@ -70,7 +70,7 @@ export async function search(
   options: SearchOptions = {},
   textIndex?: TextIndex
 ): Promise<SearchResult[]> {
-  const { mode = 'hybrid', limit = 10, after, before, project, sessionId } = options;
+  const { mode = 'hybrid', limit = 10, after, before, project, sessionId, harness } = options;
   const resolvedMode = mode === 'both' ? 'hybrid' : mode;
   const useVector = resolvedMode === 'vector' || resolvedMode === 'hybrid';
   const useText = resolvedMode === 'text' || resolvedMode === 'hybrid';
@@ -85,7 +85,7 @@ export async function search(
     // The filter is applied inside the graph traversal via ArrayIdFilter, so
     // there is no over-fetch-and-trim. Subagent turns never reach here at all:
     // store.ts does not give them a vector (design doc §07).
-    const ids = filterIds(store, { project, sessionId, after, before });
+    const ids = filterIds(store, { project, sessionId, harness, after, before });
     const queryEmbedding = await generateQueryEmbedding(query);
     const hits = index.search(queryEmbedding, depth, ids);
     for (const { id, score } of hits) similarityById.set(id, score);
@@ -94,8 +94,8 @@ export async function search(
 
   if (useText) {
     const ids = textIndex
-      ? textIndex.search(query, depth, { project, sessionId, after, before }).map((h) => h.id)
-      : textSearch(store, query, { after, before, project, sessionId, limit: depth }).map((e) => e.id);
+      ? textIndex.search(query, depth, { project, sessionId, harness, after, before }).map((h) => h.id)
+      : textSearch(store, query, { after, before, project, sessionId, harness, limit: depth }).map((e) => e.id);
     textList = lists.push(ids) - 1;
   }
 
@@ -125,8 +125,8 @@ export async function searchMultipleConcepts(
   concepts: string[],
   options: Omit<SearchOptions, 'mode'> = {}
 ): Promise<MultiConceptResult[]> {
-  const { limit = 10, project, sessionId } = options;
-  const ids = filterIds(store, { project, sessionId });
+  const { limit = 10, project, sessionId, harness } = options;
+  const ids = filterIds(store, { project, sessionId, harness });
 
   const perConcept = await Promise.all(
     concepts.map(async (concept) => {

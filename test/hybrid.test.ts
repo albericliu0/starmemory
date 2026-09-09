@@ -17,9 +17,10 @@ let vectors: VectorIndex;
 let text: TextIndex;
 let dir: string;
 
-const FIXTURES = [
+const FIXTURES: { project: string; user: string; assistant: string; harness?: 'claude' | 'codex' }[] = [
   {
     project: 'starrocks',
+    harness: 'codex',
     user: 'How does StarRocks handle colocate join?',
     assistant: 'Colocate join places co-located tablets on the same BE to avoid network shuffle.',
   },
@@ -63,6 +64,7 @@ beforeAll(async () => {
       store,
       {
         project: f.project,
+        harness: f.harness,
         sessionId: 's1',
         timestamp: '2026-03-01T10:00:00.000Z',
         userMessage: f.user,
@@ -158,6 +160,19 @@ describe('hybrid mode', () => {
 
     expect(results.length).toBeGreaterThan(0);
     for (const r of results) expect(r.exchange.project).toBe('starrocks');
+  });
+
+  it('applies the harness filter to both paths, so "only what I did in Codex" works', async () => {
+    const results = await search(store, vectors, 'compaction join', { limit: 10, harness: 'codex' }, text);
+
+    expect(results.map((r) => r.exchange.userMessage)).toEqual(['How does StarRocks handle colocate join?']);
+  });
+
+  it('reads fixtures inserted without a harness as claude', async () => {
+    const results = await search(store, vectors, 'compaction join', { limit: 10, harness: 'claude' }, text);
+
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) expect(r.exchange.userMessage).not.toBe('How does StarRocks handle colocate join?');
   });
 
   it('treats the old "both" mode as an alias so the MCP surface does not change', async () => {

@@ -21,6 +21,7 @@ export interface NativeTextDoc {
   text: string;
   project: string;
   sessionId: string;
+  harness: string;
   timestampMs: number;
   isSidechain: boolean;
 }
@@ -28,6 +29,7 @@ export interface NativeTextDoc {
 export interface NativeTextFilter {
   project?: string;
   sessionId?: string;
+  harness?: string;
   afterMs?: number;
   beforeMs?: number;
 }
@@ -66,6 +68,7 @@ export interface NativeStoreRow {
   lineEnd: number;
   isSidechain: boolean;
   embedding?: Float32Array;
+  harness?: string;
 }
 
 export interface NativeInsertResult {
@@ -79,7 +82,8 @@ export interface NativeStore {
   getVector(id: number): Float32Array | null;
   putVector(id: number, vector: Float32Array): void;
   allVectors(dim: number): { ids: Float64Array; data: Float32Array };
-  filterIds(filter: { project?: string; sessionId?: string; after?: string; before?: string }): Float64Array | null;
+  filterIds(filter: { project?: string; sessionId?: string; harness?: string; after?: string; before?: string }): Float64Array | null;
+  reindexHarness(): number;
   exchangesFrom(from: number): string[];
   nextId(): number;
   metaGet(key: string): string | null;

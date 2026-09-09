@@ -5,6 +5,7 @@
 // become the epoch milliseconds the native range filter works in.
 import fs from 'node:fs';
 import { addon, isAddonAvailable } from './addon.js';
+import { DEFAULT_HARNESS } from './store.js';
 /** True when the addon has been built. Callers that can still work without BM25
  * (see store.ts's substring fallback) use this instead of catching a throw. */
 export function isTextIndexAvailable() {
@@ -19,6 +20,7 @@ export function documentForExchange(exchange) {
         text: `${exchange.userMessage}\n\n${exchange.assistantMessage}`,
         project: exchange.project,
         sessionId: exchange.sessionId ?? '',
+        harness: exchange.harness ?? DEFAULT_HARNESS,
         timestampMs: toEpochMs(exchange.timestamp) ?? 0,
         isSidechain: exchange.isSidechain === true,
     };
@@ -68,6 +70,7 @@ export class TextIndex {
         return this.native.search(query, limit, {
             project: filter.project,
             sessionId: filter.sessionId,
+            harness: filter.harness,
             afterMs: toEpochMs(filter.after),
             beforeMs: toEpochMs(filter.before),
         });

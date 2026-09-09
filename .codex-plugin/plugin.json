@@ -1,0 +1,35 @@
+{
+  "name": "starmemory",
+  "version": "0.2.0",
+  "description": "Hybrid recall for Claude Code and Codex conversations: Tantivy BM25 + usearch HNSW over LMDB, fused by reciprocal rank. Both harnesses share one memory.",
+  "author": {
+    "name": "Wei Liu",
+    "email": "wei.liu@phoenixdata.ai"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "search",
+    "conversations",
+    "semantic-search",
+    "bm25",
+    "tantivy",
+    "lmdb",
+    "usearch",
+    "hnsw",
+    "hybrid-search"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "StarMemory",
+    "shortDescription": "One shared memory for Claude Code and Codex conversations",
+    "longDescription": "StarMemory indexes Claude Code and Codex transcripts into one local LMDB store with BM25 and HNSW retrieval, so a conversation from either harness is searchable from both.",
+    "developerName": "Wei Liu",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ]
+  }
+}

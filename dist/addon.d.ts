@@ -6,12 +6,14 @@ export interface NativeTextDoc {
     text: string;
     project: string;
     sessionId: string;
+    harness: string;
     timestampMs: number;
     isSidechain: boolean;
 }
 export interface NativeTextFilter {
     project?: string;
     sessionId?: string;
+    harness?: string;
     afterMs?: number;
     beforeMs?: number;
 }
@@ -45,6 +47,7 @@ export interface NativeStoreRow {
     lineEnd: number;
     isSidechain: boolean;
     embedding?: Float32Array;
+    harness?: string;
 }
 export interface NativeInsertResult {
     ids: number[];
@@ -62,9 +65,11 @@ export interface NativeStore {
     filterIds(filter: {
         project?: string;
         sessionId?: string;
+        harness?: string;
         after?: string;
         before?: string;
     }): Float64Array | null;
+    reindexHarness(): number;
     exchangesFrom(from: number): string[];
     nextId(): number;
     metaGet(key: string): string | null;

@@ -22,7 +22,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 /// Schema/tokenizer generation. Bump this whenever the schema or the analyzer
 /// chain changes: an index built by an older version cannot answer queries
 /// parsed by a newer one, so the caller rebuilds from LMDB (design doc §10).
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2; // 2: harness field
 
 const TOKENIZER: &str = "mixed";
 
@@ -39,6 +39,8 @@ pub struct Doc {
     pub text: String,
     pub project: String,
     pub session_id: String,
+    /// Which coding agent wrote the transcript: `claude` or `codex`.
+    pub harness: String,
     pub timestamp_ms: u64,
     pub is_sidechain: bool,
 }
@@ -47,6 +49,7 @@ pub struct Doc {
 pub struct Filter {
     pub project: Option<String>,
     pub session_id: Option<String>,
+    pub harness: Option<String>,
     pub after_ms: Option<u64>,
     pub before_ms: Option<u64>,
 }
@@ -63,6 +66,7 @@ struct Fields {
     text: Field,
     project: Field,
     session: Field,
+    harness: Field,
     timestamp: Field,
     sidechain: Field,
 }
@@ -87,12 +91,13 @@ fn build_schema() -> (Schema, Fields) {
     // STRING means "one raw token, exact match" -- right for identifiers, wrong for prose.
     let project = builder.add_text_field("project", STRING);
     let session = builder.add_text_field("session_id", STRING);
+    let harness = builder.add_text_field("harness", STRING);
     let timestamp = builder.add_u64_field("timestamp_ms", INDEXED | FAST);
     let sidechain = builder.add_u64_field("is_sidechain", INDEXED);
 
     (
         builder.build(),
-        Fields { id, text, project, session, timestamp, sidechain },
+        Fields { id, text, project, session, harness, timestamp, sidechain },
     )
 }
 
@@ -179,7 +184,25 @@ impl TextEngine {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let (schema, fields) = build_schema();
-        let index = Index::open_or_create(MmapDirectory::open(dir)?, schema)?;
+        let index = match Index::open_or_create(MmapDirectory::open(dir)?, schema.clone()) {
+            Ok(index) => index,
+            // An index left by an older INDEX_VERSION. tantivy will not open it,
+            // and the version check on the TypeScript side never gets to run.
+            // The index is a cache over LMDB (design doc §10), so start it over;
+            // the caller's version mismatch then reloads every row from the store.
+            Err(TantivyError::SchemaError(_)) => {
+                for entry in std::fs::read_dir(dir)? {
+                    let path = entry?.path();
+                    if path.is_dir() {
+                        std::fs::remove_dir_all(&path)?;
+                    } else {
+                        std::fs::remove_file(&path)?;
+                    }
+                }
+                Index::open_or_create(MmapDirectory::open(dir)?, schema)?
+            }
+            Err(e) => return Err(e.into()),
+        };
         register_tokenizer(&index);
 
         // Manual reload keeps "when do new documents become visible" explicit:
@@ -224,6 +247,7 @@ impl TextEngine {
             doc.add_text(fields.text, &d.text);
             doc.add_text(fields.project, &d.project);
             doc.add_text(fields.session, &d.session_id);
+            doc.add_text(fields.harness, &d.harness);
             doc.add_u64(fields.timestamp, d.timestamp_ms);
             doc.add_u64(fields.sidechain, u64::from(d.is_sidechain));
             writer.add_document(doc)?;
@@ -272,6 +296,15 @@ impl TextEngine {
                 Occur::Must,
                 Box::new(TermQuery::new(
                     Term::from_field_text(fields.session, session),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        if let Some(harness) = &filter.harness {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(fields.harness, harness),
                     IndexRecordOption::Basic,
                 )),
             ));
@@ -375,6 +408,7 @@ mod tests {
             text: text.to_string(),
             project: "proj-a".to_string(),
             session_id: "sess-1".to_string(),
+            harness: "claude".to_string(),
             timestamp_ms: 1_700_000_000_000,
             is_sidechain: false,
         }
@@ -581,6 +615,49 @@ mod tests {
         let hits = engine.search("keyword", 10, &filter).unwrap();
 
         assert_eq!(ids(&hits), vec![1]);
+    }
+
+    /// INDEX_VERSION bumps change the schema. tantivy refuses to open a
+    /// directory whose stored schema differs, and that refusal happened before
+    /// the TypeScript side could compare versions and rebuild. The index is a
+    /// cache over LMDB, so the right move is to start it over.
+    #[test]
+    fn opens_over_an_index_built_with_an_older_schema_by_starting_it_over() {
+        let dir = TempDir::new().unwrap();
+        let mut old = Schema::builder();
+        old.add_u64_field("id", STORED | INDEXED);
+        old.add_text_field("text", tantivy::schema::TEXT);
+        let old_index = Index::create_in_dir(dir.path(), old.build()).unwrap();
+        let mut w = old_index.writer(15_000_000).unwrap();
+        let mut d = TantivyDocument::new();
+        d.add_u64(old_index.schema().get_field("id").unwrap(), 1);
+        w.add_document(d).unwrap();
+        w.commit().unwrap();
+        drop(w);
+        drop(old_index);
+
+        let engine = TextEngine::open(dir.path()).unwrap();
+
+        assert_eq!(engine.num_docs().unwrap(), 0);
+    }
+
+    #[test]
+    fn filters_to_one_harness() {
+        let dir = TempDir::new().unwrap();
+        let mut engine = TextEngine::open(dir.path()).unwrap();
+        engine.try_acquire_writer().unwrap();
+        engine
+            .add_documents(&[
+                Doc { harness: "claude".into(), ..doc(1, "shared keyword here") },
+                Doc { harness: "codex".into(), ..doc(2, "shared keyword here") },
+            ])
+            .unwrap();
+        engine.commit().unwrap();
+
+        let filter = Filter { harness: Some("codex".into()), ..Default::default() };
+        let hits = engine.search("keyword", 10, &filter).unwrap();
+
+        assert_eq!(ids(&hits), vec![2]);
     }
 
     #[test]

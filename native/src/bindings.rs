@@ -19,6 +19,7 @@ pub struct TextDoc {
     pub text: String,
     pub project: String,
     pub session_id: String,
+    pub harness: String,
     pub timestamp_ms: i64,
     pub is_sidechain: bool,
 }
@@ -27,6 +28,7 @@ pub struct TextDoc {
 pub struct TextFilter {
     pub project: Option<String>,
     pub session_id: Option<String>,
+    pub harness: Option<String>,
     pub after_ms: Option<i64>,
     pub before_ms: Option<i64>,
 }
@@ -66,6 +68,7 @@ impl TextIndex {
                 text: d.text,
                 project: d.project,
                 session_id: d.session_id,
+                harness: d.harness,
                 timestamp_ms: d.timestamp_ms.max(0) as u64,
                 is_sidechain: d.is_sidechain,
             })
@@ -94,6 +97,7 @@ impl TextIndex {
             .map(|f| Filter {
                 project: f.project,
                 session_id: f.session_id,
+                harness: f.harness,
                 after_ms: f.after_ms.map(|v| v.max(0) as u64),
                 before_ms: f.before_ms.map(|v| v.max(0) as u64),
             })
@@ -240,6 +244,7 @@ pub struct StoreRow {
     pub line_end: f64,
     pub is_sidechain: bool,
     pub embedding: Option<Float32Array>,
+    pub harness: Option<String>,
 }
 
 #[napi(object)]
@@ -254,6 +259,7 @@ pub struct InsertResult {
 pub struct StoreFilter {
     pub project: Option<String>,
     pub session_id: Option<String>,
+    pub harness: Option<String>,
     pub after: Option<String>,
     pub before: Option<String>,
 }
@@ -299,6 +305,7 @@ impl StoreHandle {
                 line_end: r.line_end.max(0.0) as u64,
                 is_sidechain: r.is_sidechain,
                 embedding: r.embedding.map(|e| e.as_ref().to_vec()),
+                harness: r.harness,
             })
             .collect();
         let out = self.store()?.insert(&rows, cursor_key.as_deref()).map_err(to_js)?;
@@ -336,6 +343,7 @@ impl StoreHandle {
         let f = db::IdFilter {
             project: filter.project,
             session_id: filter.session_id,
+            harness: filter.harness,
             after: filter.after,
             before: filter.before,
         };
@@ -344,6 +352,12 @@ impl StoreHandle {
             .filter_ids(&f)
             .map_err(to_js)?
             .map(|ids| Float64Array::new(ids.into_iter().map(|i| i as f64).collect())))
+    }
+
+    /// Backfill `idx_harness` for rows stored before the harness tag existed.
+    #[napi]
+    pub fn reindex_harness(&self) -> Result<f64> {
+        self.store()?.reindex_harness().map(|n| n as f64).map_err(to_js)
     }
 
     #[napi]

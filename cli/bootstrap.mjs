@@ -6,6 +6,7 @@
 // takes. Everything here is dependency-free by necessity -- it runs before those
 // dependencies exist.
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,12 +26,24 @@ function log(message) {
   process.stderr.write(`${message}\n`);
 }
 
+/** npm next to the node we are running under. Claude Code starts MCP servers
+ * with a PATH that has neither node nor npm; run-node.sh found node for us, so
+ * npm is almost certainly beside it. Fall back to PATH for the rare split. */
+function findNpm() {
+  const beside = path.join(path.dirname(process.execPath), 'npm');
+  return fs.existsSync(beside) ? beside : 'npm';
+}
+
 function runNpmInstall(root) {
   return new Promise((resolve, reject) => {
     log('starmemory: installing dependencies (first run only, this takes a minute)...');
-    const child = spawn('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+    // npm is a script with a `#!/usr/bin/env node` shebang, so node's directory
+    // has to be on the child's PATH as well, not just known to us.
+    const nodeDir = path.dirname(process.execPath);
+    const child = spawn(findNpm(), ['install', '--omit=dev', '--no-audit', '--no-fund'], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${nodeDir}:${process.env.PATH || '/usr/bin:/bin'}` },
     });
     // npm's progress goes to stderr so it cannot corrupt the MCP stdio channel.
     child.stdout.on('data', (d) => process.stderr.write(d));

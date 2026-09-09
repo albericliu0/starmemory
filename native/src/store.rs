@@ -79,6 +79,9 @@ pub struct Row {
     pub is_sidechain: bool,
     /// Ignored for sidechain rows: they get no vector and so never enter the graph.
     pub embedding: Option<Vec<f32>>,
+    /// Which coding agent the transcript came from (`claude` / `codex`). `None`
+    /// writes no index entry; `reindex_harness` fills those in from the JSON.
+    pub harness: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -93,6 +96,7 @@ pub struct InsertOutcome {
 pub struct IdFilter {
     pub project: Option<String>,
     pub session_id: Option<String>,
+    pub harness: Option<String>,
     pub after: Option<String>,
     pub before: Option<String>,
 }
@@ -103,9 +107,14 @@ pub struct Store {
     vectors: Database<IdKey, Bytes>,
     idx_project: Database<Bytes, Unit>,
     idx_session: Database<Bytes, Unit>,
+    idx_harness: Database<Bytes, Unit>,
     idx_time: Database<Bytes, Unit>,
     meta: Database<Str, Str>,
 }
+
+/// What an exchange stored before the harness tag existed is read as: Claude
+/// Code was the only harness there was.
+pub const DEFAULT_HARNESS: &str = "claude";
 
 /// Secondary-index key: `<text>\0<id BE>`. The NUL keeps "proj" from matching
 /// "proj2" on a prefix scan; the big-endian id keeps ids ordered within a text.
@@ -149,16 +158,17 @@ impl Store {
         }
         let env = shared_env(path)?;
         // create_database returns the existing handle when the named database is
-        // already there, so every Store on a shared environment sees the same six.
+        // already there, so every Store on a shared environment sees the same seven.
         let mut wtxn = env.write_txn()?;
         let exchanges = env.create_database(&mut wtxn, Some("exchanges"))?;
         let vectors = env.create_database(&mut wtxn, Some("vectors"))?;
         let idx_project = env.create_database(&mut wtxn, Some("idx_project"))?;
         let idx_session = env.create_database(&mut wtxn, Some("idx_session"))?;
+        let idx_harness = env.create_database(&mut wtxn, Some("idx_harness"))?;
         let idx_time = env.create_database(&mut wtxn, Some("idx_time"))?;
         let meta = env.create_database(&mut wtxn, Some("meta"))?;
         wtxn.commit()?;
-        Ok(Self { env, exchanges, vectors, idx_project, idx_session, idx_time, meta })
+        Ok(Self { env, exchanges, vectors, idx_project, idx_session, idx_harness, idx_time, meta })
     }
 
     /// Insert rows, assigning ids. With `cursor_key`, rows whose `line_end` is at
@@ -193,6 +203,9 @@ impl Store {
             self.idx_project.put(&mut wtxn, &idx_key(&row.project, id), &())?;
             if let Some(session) = &row.session_id {
                 self.idx_session.put(&mut wtxn, &idx_key(session, id), &())?;
+            }
+            if let Some(harness) = &row.harness {
+                self.idx_harness.put(&mut wtxn, &idx_key(harness, id), &())?;
             }
             if !row.timestamp.is_empty() {
                 self.idx_time.put(&mut wtxn, &idx_key(&row.timestamp, id), &())?;
@@ -246,7 +259,12 @@ impl Store {
     /// Ids matching every clause, from the secondary indexes alone. `None` means
     /// no filter was asked for, so callers can tell that from "matched nothing".
     pub fn filter_ids(&self, f: &IdFilter) -> Result<Option<Vec<u64>>> {
-        if f.project.is_none() && f.session_id.is_none() && f.after.is_none() && f.before.is_none() {
+        if f.project.is_none()
+            && f.session_id.is_none()
+            && f.harness.is_none()
+            && f.after.is_none()
+            && f.before.is_none()
+        {
             return Ok(None);
         }
         let rtxn = self.env.read_txn()?;
@@ -262,6 +280,13 @@ impl Store {
         if let Some(sid) = &f.session_id {
             let mut s = std::collections::BTreeSet::new();
             for item in self.idx_session.prefix_iter(&rtxn, &idx_prefix(sid))? {
+                s.insert(id_of(item?.0));
+            }
+            sets.push(s);
+        }
+        if let Some(h) = &f.harness {
+            let mut s = std::collections::BTreeSet::new();
+            for item in self.idx_harness.prefix_iter(&rtxn, &idx_prefix(h))? {
                 s.insert(id_of(item?.0));
             }
             sets.push(s);
@@ -290,6 +315,28 @@ impl Store {
             acc = acc.intersection(&s).copied().collect();
         }
         Ok(Some(acc.into_iter().collect()))
+    }
+
+    /// Give every stored exchange an `idx_harness` entry, read from its JSON
+    /// (`DEFAULT_HARNESS` when the field is absent). One write transaction; a
+    /// second call is a no-op because the entries already exist. Returns how many
+    /// exchanges were walked.
+    pub fn reindex_harness(&self) -> Result<u64> {
+        let mut wtxn = self.env.write_txn()?;
+        let mut walked = 0;
+        let rows: Vec<(u64, String)> = self
+            .exchanges
+            .iter(&wtxn)?
+            .map(|item| item.map(|(id, json)| (id, json.to_owned())))
+            .collect::<std::result::Result<_, _>>()?;
+        for (id, json) in rows {
+            let value: serde_json::Value = serde_json::from_str(&json)?;
+            let harness = value["harness"].as_str().unwrap_or(DEFAULT_HARNESS);
+            self.idx_harness.put(&mut wtxn, &idx_key(harness, id), &())?;
+            walked += 1;
+        }
+        wtxn.commit()?;
+        Ok(walked)
     }
 
     /// Every exchange with id >= `from`, in id order. How the text index catches
@@ -342,6 +389,7 @@ mod tests {
             line_end,
             is_sidechain: false,
             embedding: Some(vec![1.0, 0.0, 0.0, 0.0]),
+            harness: Some("claude".into()),
         }
     }
 
