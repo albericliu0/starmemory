@@ -13,6 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { openStore } from './store.js';
 import { VectorIndex } from './vector-index.js';
+import { defaultArchiveRoot, readArchive, resolveArchivePath } from './archive.js';
+import { formatResults, formatMultiConceptResults } from './format-results.js';
 import { isTextIndexAvailable, openVersionedTextIndex } from './text-index.js';
 import { search, searchMultipleConcepts } from './search.js';
 const DB_PATH = process.env.STARMEMORY_DB_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'store.mdb');
@@ -21,35 +23,13 @@ const INDEX_PATH = process.env.STARMEMORY_INDEX_PATH ?? path.join(os.homedir(), 
 // builds with different schemas never share a directory (design doc §10).
 const TEXT_INDEX_PATH = process.env.STARMEMORY_TEXT_INDEX_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'text');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const ARCHIVE_ROOT = defaultArchiveRoot();
 const store = openStore(DB_PATH);
 const index = VectorIndex.open(store, INDEX_PATH);
 // Read-only here: the MCP server never writes the index, sync does. Several
 // server processes reading the same directory is fine, tantivy readers are
 // snapshot-based and take no lock (design doc §09).
 const textIndex = isTextIndexAvailable() ? openVersionedTextIndex(TEXT_INDEX_PATH) : undefined;
-function formatResults(results) {
-    if (results.length === 0)
-        return 'No results found.';
-    return results
-        .map((r, i) => {
-        const date = r.exchange.timestamp.slice(0, 10);
-        const pct = r.similarity !== undefined ? ` - ${Math.round(r.similarity * 100)}% match` : '';
-        const from = r.exchange.harness === 'codex' ? ', codex' : '';
-        return `${i + 1}. [${r.exchange.project}, ${date}${from}]${pct}\n   "${r.snippet}"\n   Lines ${r.exchange.lineStart}-${r.exchange.lineEnd} in ${r.exchange.archivePath}\n`;
-    })
-        .join('\n');
-}
-function formatMultiConceptResults(results, concepts) {
-    if (results.length === 0)
-        return `No conversations found matching all concepts: ${concepts.join(', ')}`;
-    return results
-        .map((r, i) => {
-        const date = r.exchange.timestamp.slice(0, 10);
-        const scores = r.conceptSimilarities.map((s, j) => `${concepts[j]}: ${Math.round(s * 100)}%`).join(', ');
-        return `${i + 1}. [${r.exchange.project}, ${date}] - ${Math.round(r.averageSimilarity * 100)}% avg match\n   Concepts: ${scores}\n   "${r.snippet}"\n`;
-    })
-        .join('\n');
-}
 const { version: pluginVersion } = createRequire(import.meta.url)('../package.json');
 const server = new McpServer({ name: 'starmemory', version: pluginVersion });
 server.registerTool('search', {
@@ -81,11 +61,27 @@ server.registerTool('read', {
         startLine: z.number().int().min(1).optional(),
         endLine: z.number().int().min(1).optional(),
     },
-}, async ({ path: filePath, startLine, endLine }) => {
+}, async ({ path: requested, startLine, endLine }) => {
+    // A path from an older result may name a source transcript Claude Code has
+    // since cleaned up; the archive keeps a copy under either harness.
+    let filePath = requested;
     if (!fs.existsSync(filePath)) {
-        return { content: [{ type: 'text', text: `File not found: ${filePath}` }], isError: true };
+        const project = path.basename(path.dirname(requested));
+        for (const harness of ['claude', 'codex']) {
+            const candidate = resolveArchivePath(ARCHIVE_ROOT, requested, harness, project);
+            if (candidate !== requested) {
+                filePath = candidate;
+                break;
+            }
+        }
     }
-    const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+    if (!fs.existsSync(filePath)) {
+        return {
+            content: [{ type: 'text', text: `File not found: ${requested} (the original transcript was cleaned up and no archive copy exists)` }],
+            isError: true,
+        };
+    }
+    const lines = readArchive(filePath).split('\n');
     const start = (startLine ?? 1) - 1;
     const end = endLine ?? lines.length;
     const text = lines.slice(start, end).join('\n');

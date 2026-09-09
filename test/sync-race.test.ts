@@ -46,8 +46,8 @@ describe('two syncs racing on one fresh store', () => {
     const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
 
     await Promise.all([
-      syncAll(store, index, transcripts),
-      syncAll(store, index, transcripts),
+      syncAll(store, index, transcripts, undefined, { archiveRoot: path.join(dir, 'archive') }),
+      syncAll(store, index, transcripts, undefined, { archiveRoot: path.join(dir, 'archive') }),
     ]);
 
     const rows = exchangesFrom(store, 0);

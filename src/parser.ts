@@ -5,6 +5,7 @@
 // actually persists -- see design doc §07 "read 完整对话" for why raw-file reading
 // stays untouched regardless of storage engine, and §16 for the two harnesses.
 import fs from 'node:fs';
+import { openArchive } from './archive.js';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { Harness, ParsedExchange } from './types.js';
@@ -24,6 +25,8 @@ interface JSONLMessage {
   promptSource?: string;
   /** Set on entries Claude Code writes for its own bookkeeping. */
   isMeta?: boolean;
+  /** The recap Claude Code writes after a compaction, as a user-role entry. */
+  isCompactSummary?: boolean;
 }
 
 /** How a person's own message is marked. This is a whitelist on purpose: a
@@ -120,7 +123,7 @@ const CODEX_LINE_TYPES = new Set(['session_meta', 'turn_context', 'response_item
 /** Reads the first parseable line and decides which format the file is in.
  * Unknown or empty files are read as Claude, the format that existed first. */
 export async function detectHarness(filePath: string): Promise<Harness> {
-  const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+  const rl = readline.createInterface({ input: openArchive(filePath), crlfDelay: Infinity });
   try {
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -183,7 +186,7 @@ async function parseCodexConversation(
   archivePath: string
 ): Promise<ParsedExchange[]> {
   const exchanges: ParsedExchange[] = [];
-  const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+  const rl = readline.createInterface({ input: openArchive(filePath), crlfDelay: Infinity });
 
   let lineNumber = 0;
   let project = fallbackProject;
@@ -265,7 +268,7 @@ async function parseClaudeConversation(
 ): Promise<ParsedExchange[]> {
   const exchanges: ParsedExchange[] = [];
   const rl = readline.createInterface({
-    input: fs.createReadStream(filePath),
+    input: openArchive(filePath),
     crlfDelay: Infinity,
   });
 
@@ -304,6 +307,9 @@ async function parseClaudeConversation(
 
     if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
     if (!parsed.message) continue;
+    // Claude's own compaction recap sits in a user-role entry. It is not what
+    // the person said, and it repeats turns that are already in the file.
+    if (parsed.isCompactSummary) continue;
 
     const text = extractText(parsed.message.content);
     if (!text.trim()) continue;

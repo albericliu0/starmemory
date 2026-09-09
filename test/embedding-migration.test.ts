@@ -115,40 +115,41 @@ describe('syncAll', () => {
     const { syncAll } = await import('../src/sync.js');
     const emptyTranscripts = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-no-transcripts-'));
 
-    const result = await syncAll(store, VectorIndex.open(store, path.join(dir, 'index.usearch')), emptyTranscripts);
+    const result = await syncAll(store, VectorIndex.open(store, path.join(dir, 'index.usearch')), emptyTranscripts, undefined, { archiveRoot: path.join(dir, 'archive') });
 
     expect(result.reembedded).toBe(2);
     fs.rmSync(emptyTranscripts, { recursive: true, force: true });
   });
 });
 
-describe('vector index version', () => {
-  it('rebuilds the index file when the recorded version differs from the addon', async () => {
-    const { VECTOR_INDEX_VERSION_KEY } = await import('../src/vector-index.js');
+describe('vector index generation', () => {
+  it("builds at its own generation's path and leaves another generation's file alone", async () => {
+    const { versionedVectorIndexPath } = await import('../src/vector-index.js');
     insertWithStaleVector(1);
     await ensureEmbeddingModel(store);
-    const indexPath = path.join(dir, 'index.usearch');
-    VectorIndex.open(store, indexPath);
-    const built = fs.statSync(indexPath).mtimeMs;
-    await new Promise((r) => setTimeout(r, 20));
+    const base = path.join(dir, 'index.usearch');
+    const foreign = path.join(dir, 'index-v0.usearch');
+    fs.writeFileSync(foreign, 'built by an addon with another on-disk layout');
 
-    store.meta.putSync(VECTOR_INDEX_VERSION_KEY, 0);
-    VectorIndex.open(store, indexPath);
+    const index = VectorIndex.open(store, base);
 
-    expect(fs.statSync(indexPath).mtimeMs).toBeGreaterThan(built);
-    expect(store.meta.get(VECTOR_INDEX_VERSION_KEY)).toBeGreaterThan(0);
+    expect(index.size()).toBe(1);
+    expect(fs.existsSync(versionedVectorIndexPath(base))).toBe(true);
+    expect(fs.readFileSync(foreign, 'utf8')).toBe('built by an addon with another on-disk layout');
   });
 
-  it('keeps the index file when the recorded version matches', async () => {
+  it('keeps the index file when reopened at the same generation', async () => {
+    const { versionedVectorIndexPath } = await import('../src/vector-index.js');
     insertWithStaleVector(1);
     await ensureEmbeddingModel(store);
-    const indexPath = path.join(dir, 'index.usearch');
-    VectorIndex.open(store, indexPath);
-    const built = fs.statSync(indexPath).mtimeMs;
+    const base = path.join(dir, 'index.usearch');
+    VectorIndex.open(store, base);
+    const file = versionedVectorIndexPath(base);
+    const built = fs.statSync(file).mtimeMs;
     await new Promise((r) => setTimeout(r, 20));
 
-    VectorIndex.open(store, indexPath);
+    VectorIndex.open(store, base);
 
-    expect(fs.statSync(indexPath).mtimeMs).toBe(built);
+    expect(fs.statSync(file).mtimeMs).toBe(built);
   });
 });

@@ -7,6 +7,13 @@
 // returns at once -- the same shape episodic-memory uses. The child writes to
 // a log file instead of the hook's stdio, which Claude Code would otherwise
 // capture into the session.
+// A summarizer child (Claude Agent SDK or codex app-server) fires SessionStart,
+// whose hook is this very command. Without this exit, sync would summarise,
+// which starts a child, which runs sync... Keep in step with summarizerEnv()
+// in src/summarizer-claude.ts. Checked before anything else, even the
+// dependency install, so the child costs nothing.
+if (process.env.STARMEMORY_SUMMARIZER_GUARD === '1') process.exit(0);
+
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';

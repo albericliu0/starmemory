@@ -189,6 +189,18 @@ describe('TextIndex', () => {
     expect(second.tryAcquireWriter()).toBe(false);
   });
 
+  it('lets a reader opened before the commit see what another handle wrote', () => {
+    const reader = TextIndex.open(path.join(dir, 'text'));
+    expect(reader.search('saturated', 10)).toEqual([]);
+
+    const writer = writableIndex();
+    writer.addExchanges([exchange({ id: 5 })]);
+    writer.commit();
+
+    expect(reader.search('saturated', 10).map((h) => h.id)).toEqual([5]);
+    expect(reader.numDocs()).toBe(1);
+  });
+
   it('lets a reader search an index another handle wrote', () => {
     const writer = writableIndex();
     writer.addExchanges([exchange({ id: 5 })]);

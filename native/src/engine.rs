@@ -205,8 +205,11 @@ impl TextEngine {
         };
         register_tokenizer(&index);
 
-        // Manual reload keeps "when do new documents become visible" explicit:
-        // they appear on commit(), not on a background timer.
+        // Manual reload: new documents become visible on commit() for the
+        // writing handle, and on the next search() for every other handle,
+        // never on a background timer. A reader that is a different process
+        // from the writer (the MCP server versus the sync) has no commit() to
+        // learn from, hence the reload at the top of each search.
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -265,6 +268,16 @@ impl TextEngine {
         Ok(())
     }
 
+    /// Remove these ids' documents on the next commit. Needs the writer.
+    pub fn delete_documents(&mut self, ids: &[u64]) -> Result<()> {
+        let fields = self.fields;
+        let writer = self.writer.as_mut().ok_or(NO_WRITER)?;
+        for &id in ids {
+            writer.delete_term(Term::from_field_u64(fields.id, id));
+        }
+        Ok(())
+    }
+
     pub fn delete_all(&mut self) -> Result<()> {
         let writer = self.writer.as_mut().ok_or(NO_WRITER)?;
         writer.delete_all_documents()?;
@@ -275,6 +288,9 @@ impl TextEngine {
         if k == 0 {
             return Ok(Vec::new());
         }
+        // Picks up segments another process committed since our last look.
+        // Cheap when nothing changed: tantivy compares meta.json and returns.
+        self.reader.reload()?;
         let Some(user_query) = self.parse(query) else {
             return Ok(Vec::new());
         };
@@ -345,6 +361,7 @@ impl TextEngine {
     }
 
     pub fn num_docs(&self) -> Result<u64> {
+        self.reader.reload()?;
         Ok(self.reader.searcher().num_docs())
     }
 
@@ -719,6 +736,21 @@ mod tests {
     }
 
     #[test]
+    fn delete_documents_drops_only_the_named_ids() {
+        let dir = TempDir::new().unwrap();
+        let mut engine = TextEngine::open(dir.path()).unwrap();
+        engine.try_acquire_writer().unwrap();
+        engine.add_documents(&[doc(1, "shared keyword one"), doc(2, "shared keyword two"), doc(3, "shared keyword three")]).unwrap();
+        engine.commit().unwrap();
+
+        engine.delete_documents(&[1, 3]).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(ids(&engine.search("keyword", 10, &Filter::default()).unwrap()), vec![2]);
+        assert_eq!(engine.num_docs().unwrap(), 1);
+    }
+
+    #[test]
     fn delete_all_empties_the_index() {
         let (_d, mut engine) = engine_with(&[doc(1, "shared keyword here"), doc(2, "shared keyword here")]);
         assert_eq!(engine.num_docs().unwrap(), 2);
@@ -752,6 +784,24 @@ mod tests {
         engine.commit().unwrap();
 
         assert_eq!(ids(&engine.search("keyword", 10, &Filter::default()).unwrap()), vec![1]);
+    }
+
+    #[test]
+    fn a_reader_handle_sees_what_another_handle_committed_after_it_opened() {
+        // The MCP server holds one handle for a whole session while the sync
+        // process commits through another. The server must not stay frozen on
+        // the snapshot it opened with.
+        let dir = TempDir::new().unwrap();
+        let reader = TextEngine::open(dir.path()).unwrap();
+        assert!(reader.search("keyword", 10, &Filter::default()).unwrap().is_empty());
+
+        let mut writer = TextEngine::open(dir.path()).unwrap();
+        writer.try_acquire_writer().unwrap();
+        writer.add_documents(&[doc(1, "shared keyword here")]).unwrap();
+        writer.commit().unwrap();
+
+        assert_eq!(ids(&reader.search("keyword", 10, &Filter::default()).unwrap()), vec![1]);
+        assert_eq!(reader.num_docs().unwrap(), 1);
     }
 
     #[test]

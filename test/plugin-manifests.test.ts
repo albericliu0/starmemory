@@ -56,6 +56,13 @@ describe('hooks.json', () => {
       for (const h of group.hooks) expect(h.command).toContain('${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}');
     }
   });
+
+  it('also fires after a compaction, so a session that runs for days is synced at each compact', () => {
+    const hooks = read('hooks/hooks.json').hooks.SessionStart;
+    for (const group of hooks) {
+      expect(group.matcher.split('|')).toEqual(expect.arrayContaining(['startup', 'resume', 'clear', 'compact']));
+    }
+  });
 });
 
 describe('local Codex marketplace', () => {

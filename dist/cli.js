@@ -35,7 +35,9 @@ async function main() {
                     ? 'BM25 index left to another running sync'
                     : `${result.textIndexed} added to the BM25 index`;
                 const migrated = result.reembedded > 0 ? `, re-embedded ${result.reembedded} for the new model` : '';
-                console.log(`Scanned ${result.filesScanned} files, indexed ${result.exchangesIndexed} new exchanges${migrated}, ${bm25}.`);
+                const failed = result.summaryFailed > 0 ? ` (${result.summaryFailed} failed, see sync.log)` : '';
+                const expired = result.expiredFiles > 0 ? `, expired ${result.expiredFiles} conversations (${result.expired} exchanges)` : '';
+                console.log(`Scanned ${result.filesScanned} files, archived ${result.archived}, indexed ${result.exchangesIndexed} new exchanges${migrated}, ${bm25}, ${result.summarized} summaries written${failed}${expired}.`);
             }
         }
         finally {

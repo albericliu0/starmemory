@@ -55,7 +55,7 @@ describe('syncAll over both harness directories', () => {
   it('stores exchanges from Claude Code and Codex in the same store, each tagged', async () => {
     const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
 
-    const result = await syncAll(store, index, [claudeDir(), codexDir()]);
+    const result = await syncAll(store, index, [claudeDir(), codexDir()], undefined, { archiveRoot: path.join(dir, 'archive') });
 
     expect(result.filesScanned).toBe(2);
     expect(result.exchangesIndexed).toBe(2);
@@ -69,7 +69,7 @@ describe('syncAll over both harness directories', () => {
   it('skips a source directory that does not exist instead of failing', async () => {
     const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
 
-    const result = await syncAll(store, index, [path.join(dir, 'nowhere')]);
+    const result = await syncAll(store, index, [path.join(dir, 'nowhere')], undefined, { archiveRoot: path.join(dir, 'archive') });
 
     expect(result.filesScanned).toBe(0);
   });
@@ -87,7 +87,9 @@ describe('rows from before Codex support', () => {
       );
       expect(filterIds(oldStore, { harness: 'claude' })).toEqual([]);
 
-      await syncAll(oldStore, VectorIndex.open(oldStore, path.join(dir, 'old-index.usearch')), []);
+      // The row is from January and its source is gone: the TTL would expire it,
+      // which is right in general but not what this test is about.
+      await syncAll(oldStore, VectorIndex.open(oldStore, path.join(dir, 'old-index.usearch')), [], undefined, { archiveRoot: path.join(dir, 'archive'), ttl: { days: 0 } });
 
       expect(filterIds(oldStore, { harness: 'claude' })).toEqual([0]);
     } finally {

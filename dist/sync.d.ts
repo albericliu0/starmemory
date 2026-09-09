@@ -1,3 +1,4 @@
+import { type SummaryOptions } from './summaries.js';
 import { type StoreHandle } from './store.js';
 import { VectorIndex } from './vector-index.js';
 import { TextIndex } from './text-index.js';
@@ -40,9 +41,36 @@ export interface TextSyncResult {
  * immediately without touching the cursor, so its rows stay pending and the next
  * lock holder indexes them from the cursor forward (design doc §09). */
 export declare function syncTextIndex(store: StoreHandle, index: TextIndex): TextSyncResult;
+export interface SyncOptions {
+    /** Where transcript copies live (design doc archive-and-summaries §03).
+     * Tests point this at a temp dir; the default is ~/.config/starmemory/archive. */
+    archiveRoot?: string;
+    /** Summary step settings (design doc archive-and-summaries §04); tests inject
+     * fake summarizers here. `limit` defaults to STARMEMORY_SUMMARY_LIMIT or 10. */
+    summaries?: SummaryOptions;
+    /** Expiry settings (design doc archive-and-summaries §13). `days` defaults to
+     * STARMEMORY_TTL_DAYS or 180; 0 disables. `now` is for tests. */
+    ttl?: {
+        days?: number;
+        now?: number;
+        log?: (line: string) => void;
+    };
+}
 export interface SyncResult {
     filesScanned: number;
     exchangesIndexed: number;
+    /** Transcripts copied into the archive this run. */
+    archived: number;
+    /** Summary files written this run (including empty sentinels). */
+    summarized: number;
+    /** Summaries that failed and were left as error sentinels to retry. */
+    summaryFailed: number;
+    /** Rows removed because their conversation passed the TTL. */
+    expired: number;
+    /** Conversations (files) removed for the same reason. */
+    expiredFiles: number;
+    /** True when expiry was skipped because another process held the text writer. */
+    expireSkipped: boolean;
     /** Vectors recomputed because the embedding model changed (see ensureEmbeddingModel). */
     reembedded: number;
     /** Documents added to the BM25 index this run. */
@@ -54,4 +82,4 @@ export interface SyncResult {
  * last-synced cursor, and rebuilds the vector index once at the end (design doc
  * §07: rebuilding from scratch is a sub-second operation at this scale, so
  * there's no need for incremental graph maintenance). */
-export declare function syncAll(store: StoreHandle, index: VectorIndex, transcriptsDirs?: string | string[], textIndex?: TextIndex): Promise<SyncResult>;
+export declare function syncAll(store: StoreHandle, index: VectorIndex, transcriptsDirs?: string | string[], textIndex?: TextIndex, options?: SyncOptions): Promise<SyncResult>;

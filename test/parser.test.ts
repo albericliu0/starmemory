@@ -159,3 +159,22 @@ describe('parseConversation', () => {
     expect(exchange.assistantMessage).toBe('the lock ordering bug is real and here is why');
   });
 });
+
+// After a compaction Claude Code appends a system compact_boundary line and a
+// user-role line flagged isCompactSummary holding Claude's own recap. Neither
+// is something a person said.
+describe('compaction records', () => {
+  it('produces no exchange for the boundary line or the compaction summary Claude wrote', async () => {
+    const file = transcript([
+      userTurn('how do I fix the flaky test?'),
+      assistantTurn('Pin the clock in the test.'),
+      { type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: '2026-03-01T11:00:00.000Z', sessionId: 's1' },
+      userTurn('This session is being continued from a previous conversation that ran out of context. Summary: the user fixed a flaky test.', { isCompactSummary: true }),
+      assistantTurn('Continuing.'),
+      userTurn('now add a retry'),
+      assistantTurn('Added a retry with backoff.'),
+    ]);
+    const exchanges = await parseConversation(file, 'proj', file);
+    expect(exchanges.map((e) => e.userMessage)).toEqual(['how do I fix the flaky test?', 'now add a retry']);
+  });
+});

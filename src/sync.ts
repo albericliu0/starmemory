@@ -5,7 +5,10 @@
 // itself (flock), unlike episodic-memory's hand-rolled file-lock.ts.
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseConversation, projectFromPath } from './parser.js';
+import { detectHarness, parseConversation, projectFromPath } from './parser.js';
+import { archivePathFor, copyIfChanged, defaultArchiveRoot } from './archive.js';
+import { DEFAULT_SUMMARY_LIMIT, summarizeQuietConversations, type SummaryCandidate, type SummaryOptions } from './summaries.js';
+import { defaultTtlDays, expireOldConversations, ttlCutoffMs } from './ttl.js';
 import { EMBEDDING_MODEL, generateExchangeEmbedding } from './embeddings.js';
 import {
   HARNESS_INDEX_KEY,
@@ -133,9 +136,33 @@ function* walkJsonlFiles(dir: string): Generator<string> {
   }
 }
 
+export interface SyncOptions {
+  /** Where transcript copies live (design doc archive-and-summaries §03).
+   * Tests point this at a temp dir; the default is ~/.config/starmemory/archive. */
+  archiveRoot?: string;
+  /** Summary step settings (design doc archive-and-summaries §04); tests inject
+   * fake summarizers here. `limit` defaults to STARMEMORY_SUMMARY_LIMIT or 10. */
+  summaries?: SummaryOptions;
+  /** Expiry settings (design doc archive-and-summaries §13). `days` defaults to
+   * STARMEMORY_TTL_DAYS or 180; 0 disables. `now` is for tests. */
+  ttl?: { days?: number; now?: number; log?: (line: string) => void };
+}
+
 export interface SyncResult {
   filesScanned: number;
   exchangesIndexed: number;
+  /** Transcripts copied into the archive this run. */
+  archived: number;
+  /** Summary files written this run (including empty sentinels). */
+  summarized: number;
+  /** Summaries that failed and were left as error sentinels to retry. */
+  summaryFailed: number;
+  /** Rows removed because their conversation passed the TTL. */
+  expired: number;
+  /** Conversations (files) removed for the same reason. */
+  expiredFiles: number;
+  /** True when expiry was skipped because another process held the text writer. */
+  expireSkipped: boolean;
   /** Vectors recomputed because the embedding model changed (see ensureEmbeddingModel). */
   reembedded: number;
   /** Documents added to the BM25 index this run. */
@@ -156,10 +183,17 @@ export async function syncAll(
   store: StoreHandle,
   index: VectorIndex,
   transcriptsDirs: string | string[] = defaultTranscriptDirs(),
-  textIndex?: TextIndex
+  textIndex?: TextIndex,
+  options: SyncOptions = {}
 ): Promise<SyncResult> {
   let filesScanned = 0;
   let exchangesIndexed = 0;
+  let archived = 0;
+  const archiveRoot = options.archiveRoot ?? defaultArchiveRoot();
+  const candidates: SummaryCandidate[] = [];
+  const ttlDays = options.ttl?.days ?? defaultTtlDays();
+  const now = options.ttl?.now ?? Date.now();
+  const cutoff = ttlDays > 0 ? ttlCutoffMs(ttlDays, now) : Number.NEGATIVE_INFINITY;
 
   // Before touching anything else: if the model changed, every existing vector
   // is stale and the graph built from them would be meaningless.
@@ -175,13 +209,33 @@ export async function syncAll(
   const dirs = Array.isArray(transcriptsDirs) ? transcriptsDirs : [transcriptsDirs];
   for (const filePath of walkAll(dirs)) {
     filesScanned++;
+    // Already past the TTL before we ever saw it: not copied, not indexed.
+    // Only matters when Claude Code's own 30-day cleanup is turned off.
+    if (fs.statSync(filePath).mtimeMs < cutoff) continue;
     const project = projectFromPath(filePath);
     // This read is only an optimisation, to avoid embedding rows another sync
     // has already stored. The authoritative check is inside the insert
     // transaction below, which re-reads the cursor under LMDB's write lock.
     const cursor = (store.meta.get(syncCursorKey(filePath)) as number | undefined) ?? 0;
 
-    const exchanges = await parseConversation(filePath, project, filePath);
+    // Parse the source, then copy it into the archive and point every row at
+    // the copy. The project comes from the parse, not the path: a Codex rollout
+    // sits under a date directory, its project is the cwd in session_meta. The
+    // cursor stays keyed by the source path: switching the key would make every
+    // file look new on the first sync after this change and double every row.
+    const parsed = await parseConversation(filePath, project, filePath);
+    const harness = parsed[0]?.harness ?? (await detectHarness(filePath));
+    const resolvedProject = parsed[0]?.project ?? project;
+    const copy = archivePathFor(archiveRoot, harness, resolvedProject, filePath);
+    if (await copyIfChanged(filePath, copy)) archived++;
+    const exchanges = parsed.map((e) => ({ ...e, archivePath: copy }));
+    candidates.push({
+      archivePath: copy,
+      harness,
+      project: resolvedProject,
+      sessionId: exchanges[0]?.sessionId,
+      sourceMtimeMs: fs.statSync(filePath).mtimeMs,
+    });
     const newExchanges = exchanges.filter((e) => e.lineEnd > cursor);
     if (newExchanges.length === 0) continue;
 
@@ -198,7 +252,16 @@ export async function syncAll(
     exchangesIndexed += ids.length;
   }
 
-  if (exchangesIndexed > 0 || migration.reembedded > 0) {
+  // Expiry before the graph rebuild, so the rebuild already reflects it. It
+  // takes the text writer; syncTextIndex below reuses the same handle's lock.
+  const expiry = expireOldConversations(store, textIndex, {
+    ttlDays,
+    now,
+    archiveRoot,
+    log: options.ttl?.log ?? ((line) => process.stderr.write(`${line}\n`)),
+  });
+
+  if (exchangesIndexed > 0 || migration.reembedded > 0 || expiry.rows > 0) {
     index.rebuild(store);
   }
 
@@ -206,9 +269,21 @@ export async function syncAll(
   // written rows it could not index, and we may be the one holding the lock now.
   const textSync = textIndex ? syncTextIndex(store, textIndex) : undefined;
 
+  // Last, and bounded: a few quiet conversations get a summary. Never blocks
+  // indexing; a failure is a sentinel file and a log line.
+  const envLimit = Number(process.env.STARMEMORY_SUMMARY_LIMIT);
+  const limit = options.summaries?.limit ?? (Number.isFinite(envLimit) && process.env.STARMEMORY_SUMMARY_LIMIT !== undefined ? envLimit : DEFAULT_SUMMARY_LIMIT);
+  const summaries = await summarizeQuietConversations(candidates, { ...options.summaries, limit });
+
   return {
     filesScanned,
     exchangesIndexed,
+    archived,
+    summarized: summaries.written,
+    summaryFailed: summaries.failed,
+    expired: expiry.rows,
+    expiredFiles: expiry.files,
+    expireSkipped: expiry.skipped,
     reembedded: migration.reembedded,
     textIndexed: textSync?.indexed ?? 0,
     textSkipped: textSync?.skipped ?? false,

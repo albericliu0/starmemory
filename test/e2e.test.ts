@@ -129,3 +129,41 @@ describe('multi-concept AND search', () => {
     expect(results.every((r) => r.conceptSimilarities.length === 2)).toBe(true);
   });
 });
+
+// The sync process rebuilds the index while this server keeps running. Both
+// entry points must pick up the new file before answering, and each must do so
+// once per query so every concept of an AND search sees the same graph.
+describe('a sync landing while the server is up', () => {
+  let newId: number;
+
+  beforeAll(async () => {
+    const user = 'How does the Kubernetes scheduler pick a node for a pending pod?';
+    const assistant = 'kube-scheduler filters nodes by resources and taints, then scores the survivors.';
+    newId = insertExchange(
+      store,
+      {
+        project: 'k8s',
+        sessionId: 's4',
+        timestamp: new Date().toISOString(),
+        userMessage: user,
+        assistantMessage: assistant,
+        archivePath: '/tmp/fake.jsonl',
+        lineStart: 1,
+        lineEnd: 2,
+        embeddingVersion: 1,
+      },
+      await generateExchangeEmbedding(user, assistant)
+    );
+    VectorIndex.open(store, path.join(tmpDir, 'index.hnsw')).rebuild(store);
+  }, 60_000);
+
+  it('search() answers from the rebuilt index', async () => {
+    const results = await search(store, index, 'kubernetes pod scheduling', { mode: 'vector', limit: 3 });
+    expect(results.map((r) => r.exchange.id)).toContain(newId);
+  });
+
+  it('searchMultipleConcepts() answers from the rebuilt index', async () => {
+    const results = await searchMultipleConcepts(store, index, ['kubernetes scheduler', 'pending pod'], { limit: 3 });
+    expect(results.map((r) => r.exchange.id)).toContain(newId);
+  });
+});
