@@ -124,7 +124,7 @@ describe('syncAll', () => {
 
 describe('vector index generation', () => {
   it("builds at its own generation's path and leaves another generation's file alone", async () => {
-    const { generationPath } = await import('../src/vector-index.js');
+    const { currentIndexFile } = await import('../src/vector-index.js');
     insertWithStaleVector(1);
     await ensureEmbeddingModel(store);
     const base = path.join(dir, 'index.usearch');
@@ -134,17 +134,17 @@ describe('vector index generation', () => {
     const index = VectorIndex.open(store, base);
 
     expect(index.size()).toBe(1);
-    expect(fs.existsSync(generationPath(base, 0))).toBe(true);
+    expect(fs.existsSync(currentIndexFile(store, base)!)).toBe(true);
     expect(fs.readFileSync(foreign, 'utf8')).toBe('built by an addon with another on-disk layout');
   });
 
   it('keeps the index file when reopened at the same generation', async () => {
-    const { generationPath } = await import('../src/vector-index.js');
+    const { currentIndexFile } = await import('../src/vector-index.js');
     insertWithStaleVector(1);
     await ensureEmbeddingModel(store);
     const base = path.join(dir, 'index.usearch');
     VectorIndex.open(store, base);
-    const file = generationPath(base, 0);
+    const file = currentIndexFile(store, base)!;
     const built = fs.statSync(file).mtimeMs;
     await new Promise((r) => setTimeout(r, 20));
 

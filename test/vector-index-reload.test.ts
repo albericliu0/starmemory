@@ -13,8 +13,9 @@ import { openStore, insertExchange, type StoreHandle } from '../src/store.js';
 import { EMBEDDING_DIM } from '../src/embeddings.js';
 import {
   VectorIndex,
-  VECTOR_GENERATION_KEY,
-  currentGeneration,
+  VECTOR_INDEX_FILE_KEY,
+  currentIndexFile,
+  generationOf,
   generationPath,
   versionedVectorIndexPath,
 } from '../src/vector-index.js';
@@ -60,7 +61,9 @@ function ageTo(file: string, ageMs: number): void {
   fs.utimesSync(file, then, then);
 }
 
-const g = (n: number) => generationPath(base, n);
+/** The file the store currently names, and its generation number. */
+const current = () => currentIndexFile(store, base)!;
+const gen = () => generationOf(current());
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-reload-'));
@@ -75,33 +78,53 @@ afterEach(async () => {
 });
 
 describe('where the index file lives', () => {
-  it('carries the addon version and a generation number', () => {
+  it('carries the addon version, a generation number and the writer pid', () => {
     const version = addon().vectorIndexVersion();
-    expect(generationPath('/cfg/starmemory/index.hnsw', 3)).toBe(`/cfg/starmemory/index-v${version}.g3.hnsw`);
+    expect(generationPath('/cfg/starmemory/index.hnsw', 3, 4242)).toBe(`/cfg/starmemory/index-v${version}.g3-4242.hnsw`);
+    expect(generationOf(`/x/index-v${version}.g3-4242.hnsw`)).toBe(3);
+    expect(generationOf(`/x/index-v${version}.hnsw`)).toBeUndefined();
     expect(versionedVectorIndexPath('/cfg/starmemory/index.hnsw')).toBe(`/cfg/starmemory/index-v${version}.hnsw`);
   });
 
   it('starts at generation 0 and records it in the store', () => {
     insertAlong(0);
 
-    VectorIndex.open(store, base);
+    const index = VectorIndex.open(store, base);
 
     expect(fs.existsSync(base)).toBe(false);
-    expect(fs.existsSync(g(0))).toBe(true);
-    expect(currentGeneration(store)).toBe(0);
+    expect(gen()).toBe(0);
+    expect(fs.existsSync(current())).toBe(true);
+    expect(index.currentPath).toBe(current());
+    expect(path.basename(current())).toContain(`-${process.pid}.`);
   });
 
   it('moves to the next generation on rebuild and drops the old file', () => {
     insertAlong(0);
     const index = VectorIndex.open(store, base);
 
+    const first = current();
+    ageTo(first, 2 * 60 * 1000); // old enough for the sweep to take it
     insertAlong(1);
     index.rebuild(store);
 
-    expect(currentGeneration(store)).toBe(1);
-    expect(fs.existsSync(g(1))).toBe(true);
-    expect(fs.existsSync(g(0))).toBe(false);
-    expect(index.currentPath).toBe(g(1));
+    expect(gen()).toBe(1);
+    expect(fs.existsSync(current())).toBe(true);
+    expect(fs.existsSync(first)).toBe(false);
+    expect(index.currentPath).toBe(current());
+  });
+
+  it('leaves a file written in the last minute alone when sweeping, since it may be another sync\'s', () => {
+    insertAlong(0);
+    const index = VectorIndex.open(store, base);
+    const someoneElses = generationPath(base, 0, 99999);
+    fs.writeFileSync(someoneElses, 'fresh build by another process');
+
+    index.rebuild(store);
+
+    expect(fs.existsSync(someoneElses)).toBe(true);
+    ageTo(someoneElses, 2 * 60 * 1000);
+    index.rebuild(store);
+    expect(fs.existsSync(someoneElses)).toBe(false);
   });
 
   it('adopts a pre-generation file as generation 0 instead of rebuilding it', () => {
@@ -109,8 +132,8 @@ describe('where the index file lives', () => {
     VectorIndex.open(store, base);
     // Turn the clock back: a store from before generations has the versioned
     // file and no generation key.
-    fs.renameSync(g(0), versionedVectorIndexPath(base));
-    store.meta.remove(VECTOR_GENERATION_KEY);
+    fs.renameSync(current(), versionedVectorIndexPath(base));
+    store.meta.remove(VECTOR_INDEX_FILE_KEY);
     const before = fs.statSync(versionedVectorIndexPath(base)).mtimeMs;
     ageTo(versionedVectorIndexPath(base), 5 * DAY_MS);
     const aged = fs.statSync(versionedVectorIndexPath(base)).mtimeMs;
@@ -118,9 +141,9 @@ describe('where the index file lives', () => {
 
     const index = VectorIndex.open(store, base);
 
-    expect(currentGeneration(store)).toBe(0);
+    expect(gen()).toBe(0);
     expect(fs.existsSync(versionedVectorIndexPath(base))).toBe(false);
-    expect(fs.statSync(g(0)).mtimeMs).toBe(aged);
+    expect(fs.statSync(current()).mtimeMs).toBe(aged);
     expect(index.size()).toBe(1);
   });
 
@@ -136,7 +159,7 @@ describe('where the index file lives', () => {
   it("prunes another version's files once they have sat untouched for a month, and never its own", () => {
     insertAlong(0);
     const version = addon().vectorIndexVersion();
-    const staleOther = path.join(dir, 'index-v1.g4.hnsw');
+    const staleOther = path.join(dir, 'index-v1.g4-123.hnsw');
     const staleOtherLegacy = path.join(dir, 'index-v1.hnsw');
     const freshOther = path.join(dir, 'index-v999.g0.hnsw');
     const unrelated = path.join(dir, 'other-v1.hnsw');
@@ -149,19 +172,21 @@ describe('where the index file lives', () => {
     expect(fs.existsSync(staleOtherLegacy)).toBe(false);
     expect(fs.existsSync(freshOther)).toBe(true);
     expect(fs.existsSync(unrelated)).toBe(true);
-    expect(fs.existsSync(path.join(dir, `index-v${version}.g0.hnsw`))).toBe(true);
+    expect(fs.existsSync(current())).toBe(true);
+    void version;
   });
 
   it('reopens an existing generation instead of rebuilding it', () => {
     insertAlong(0);
     VectorIndex.open(store, base);
-    ageTo(g(0), 5 * DAY_MS);
-    const before = fs.statSync(g(0)).mtimeMs;
+    const file = current();
+    ageTo(file, 5 * DAY_MS);
+    const before = fs.statSync(file).mtimeMs;
 
     VectorIndex.open(store, base);
 
-    expect(fs.statSync(g(0)).mtimeMs).toBe(before);
-    expect(currentGeneration(store)).toBe(0);
+    expect(fs.statSync(file).mtimeMs).toBe(before);
+    expect(current()).toBe(file);
   });
 });
 
@@ -180,7 +205,8 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
 
     expect(reader.size()).toBe(2);
     expect(reader.search(axis(1), 1).map((h) => h.id)).toEqual([newId]);
-    expect(reader.currentPath).toBe(g(1));
+    expect(reader.currentPath).toBe(current());
+    expect(gen()).toBe(1);
   });
 
   it('does not reopen while the store still names its generation', () => {
@@ -211,22 +237,26 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
     // until then, and on Windows for as long as we map it, our file is intact.
     insertAlong(0);
     const reader = VectorIndex.open(store, base);
+    const mine = reader.currentPath;
     const writer = VectorIndex.open(store, base);
     insertAlong(1);
 
     writer.rebuild(store);
 
-    // Not refreshed yet: still generation 0, still one vector.
-    expect(reader.currentPath).toBe(g(0));
+    // Not refreshed yet: still on its own file, still one vector, file intact.
+    expect(reader.currentPath).toBe(mine);
     expect(reader.size()).toBe(1);
+    expect(fs.existsSync(mine!)).toBe(true);
   });
 
   it('gives up on a generation it cannot open instead of retrying every call', () => {
     insertAlong(0);
     const reader = VectorIndex.open(store, base);
-    // A writer that produced garbage and still advanced the pointer.
-    fs.writeFileSync(g(1), 'not an index');
-    store.meta.putSync(VECTOR_GENERATION_KEY, '1');
+    // A writer that produced garbage and still pointed the store at it.
+    const garbage = generationPath(base, 1, 77777);
+    fs.writeFileSync(garbage, 'not an index');
+    store.meta.putSync(VECTOR_INDEX_FILE_KEY, path.basename(garbage));
+    const mine = reader.currentPath;
     // Every failed reopen is reported, so one line for three calls means one try.
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
@@ -237,8 +267,8 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
     reader.refresh();
 
     expect(stderrSpy).toHaveBeenCalledTimes(1);
-    expect(String(stderrSpy.mock.calls[0][0])).toContain('generation 1');
-    expect(reader.currentPath).toBe(g(0));
+    expect(String(stderrSpy.mock.calls[0][0])).toContain(path.basename(garbage));
+    expect(reader.currentPath).toBe(mine);
   });
 });
 
@@ -248,7 +278,7 @@ describe('a closed native searcher', () => {
     VectorIndex.open(store, base);
     const searcher = addon().VectorSearcher.open(
       { dim: EMBEDDING_DIM, connectivity: 16, expansionAdd: 40, expansionSearch: 64 },
-      g(0)
+      current()
     );
     expect(searcher.len()).toBe(1);
 
