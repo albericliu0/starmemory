@@ -10,9 +10,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  addonDownloadUrl,
+  addonRelativePath,
   findMissingAddons,
   findMissingDeps,
   isSupportedPlatform,
+  platformTag,
   unsupportedPlatformMessage,
 } from './install-check.mjs';
 
@@ -60,6 +63,36 @@ function runNpmInstall(root) {
   });
 }
 
+/** Fetch this platform's prebuilt addon from the release matching
+ * package.json's version. Written beside the target and renamed in: the file
+ * is not mapped by anyone yet, so the rename is safe on Windows too. Throws
+ * with the URL in the message on any failure, leaving no partial file behind.
+ * Design doc windows-support §04. */
+export async function downloadAddon(root, { version, tag = platformTag(), fetchImpl = fetch, log: report = log } = {}) {
+  const url = addonDownloadUrl(version, tag);
+  const target = path.join(root, addonRelativePath(tag));
+  const part = `${target}.${process.pid}.part`;
+  report(`starmemory: fetching the ${tag} native addon from ${url} (first run only)...`);
+  const response = await fetchImpl(url, { redirect: 'follow' });
+  if (!response.ok) {
+    throw new Error(`could not download the native addon: HTTP ${response.status} from ${url}`);
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  try {
+    fs.writeFileSync(part, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(part, target);
+  } catch (error) {
+    fs.rmSync(part, { force: true });
+    throw error;
+  }
+  report(`starmemory: native addon saved to ${target}`);
+  return target;
+}
+
+function packageVersion(root) {
+  return JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+}
+
 /** Make the plugin runnable, or explain why it cannot be.
  *
  * Returns true when it is safe to start. `quiet` is for the SessionStart hook:
@@ -71,13 +104,22 @@ export async function ensureReady({ root = PLUGIN_ROOT, quiet = false } = {}) {
     return false;
   }
 
-  const missingAddons = findMissingAddons(root);
-  if (missingAddons.length > 0) {
-    if (!quiet) {
-      log(`starmemory: prebuilt addons missing: ${missingAddons.join(', ')}`);
-      log('starmemory: run `npm run build` in the plugin directory.');
+  if (findMissingAddons(root).length > 0) {
+    // Only darwin-arm64 is committed; every other platform's binary is a
+    // release asset, fetched once and kept.
+    try {
+      await downloadAddon(root, { version: packageVersion(root), log: quiet ? () => {} : log });
+    } catch (error) {
+      if (!quiet) {
+        log(`starmemory: ${error.message}`);
+        log('starmemory: no network, or no release for this platform yet. To build it yourself: `npm run build` (needs a Rust toolchain).');
+      }
+      return false;
     }
-    return false;
+    if (findMissingAddons(root).length > 0) {
+      if (!quiet) log(`starmemory: native addon still missing after download: ${findMissingAddons(root).join(', ')}`);
+      return false;
+    }
   }
 
   if (findMissingDeps(root).length > 0) {

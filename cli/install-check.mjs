@@ -34,6 +34,14 @@ export function addonRelativePath(tag = platformTag()) {
 /** Kept for callers that still think in lists; one entry per current platform. */
 export const NATIVE_ADDONS = Object.freeze([addonRelativePath()]);
 
+/** Where a release keeps the addon for `tag`. The base is overridable so tests
+ * (and a mirror) can point somewhere else. */
+export const DEFAULT_ADDON_BASE_URL = 'https://github.com/albericliu0/starmemory/releases/download';
+
+export function addonDownloadUrl(version, tag = platformTag(), base = process.env.STARMEMORY_ADDON_BASE_URL ?? DEFAULT_ADDON_BASE_URL) {
+  return `${base.replace(/\/+$/, '')}/v${version}/starmemory_native.${tag}.node`;
+}
+
 /** Dependencies that are not usably installed under `root`.
  *
  * Probing each package's own package.json rather than just the node_modules
