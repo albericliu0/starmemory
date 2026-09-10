@@ -1,0 +1,85 @@
+# Build the native addon and run both test suites on every platform a release
+# ships for, and attach the four binaries to the release when a v* tag is pushed.
+# Design doc windows-support §05.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.tag }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,          tag: darwin-arm64 }
+          - { os: ubuntu-22.04,      tag: linux-x64 }
+          - { os: ubuntu-22.04-arm,  tag: linux-arm64 }
+          - { os: windows-2022,      tag: win32-x64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The embedding model (~160 MB) is downloaded by the first test that
+      # needs it; keep it between runs.
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: node_modules/@huggingface/transformers/.cache
+          key: transformers-cache-${{ runner.os }}-${{ hashFiles('src/embeddings.ts') }}
+
+      - run: npm ci
+
+      - name: Build the native addon for this platform
+        run: npm run build:native
+        shell: bash
+
+      - name: Rust tests
+        run: cargo test
+        working-directory: native
+
+      - name: TypeScript tests
+        run: npx vitest run
+        shell: bash
+
+      - name: Sanity-run the Windows launcher
+        if: runner.os == 'Windows'
+        run: cli\run-node.cmd -e "console.log('launcher ok', process.version)"
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starmemory_native.${{ matrix.tag }}.node
+          path: native/starmemory_native.${{ matrix.tag }}.node
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Attach the binaries to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/starmemory_native.*.node
