@@ -38,8 +38,35 @@ export const NATIVE_ADDONS = Object.freeze([addonRelativePath()]);
  * (and a mirror) can point somewhere else. */
 export const DEFAULT_ADDON_BASE_URL = 'https://github.com/albericliu0/starmemory/releases/download';
 
-export function addonDownloadUrl(version, tag = platformTag(), base = process.env.STARMEMORY_ADDON_BASE_URL ?? DEFAULT_ADDON_BASE_URL) {
-  return `${base.replace(/\/+$/, '')}/v${version}/starmemory_native.${tag}.node`;
+/** A base URL we are willing to download native code from: https, or plain
+ * http only to the local machine (tests). Throws otherwise, so a hostile
+ * environment variable cannot point the download at an http mirror. */
+export function checkedAddonBaseUrl(base = process.env.STARMEMORY_ADDON_BASE_URL ?? DEFAULT_ADDON_BASE_URL) {
+  const url = new URL(base);
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error(`refusing to download the native addon over ${url.protocol.replace(':', '')} from ${url.host}; STARMEMORY_ADDON_BASE_URL must be https`);
+  }
+  return base.replace(/\/+$/, '');
+}
+
+export function addonDownloadUrl(version, tag = platformTag(), base) {
+  return `${checkedAddonBaseUrl(base)}/v${version}/starmemory_native.${tag}.node`;
+}
+
+/** The checksum file the release carries beside the binaries: one
+ * `<sha256>  <file name>` line per asset, as `sha256sum` writes them. */
+export function addonChecksumsUrl(version, base) {
+  return `${checkedAddonBaseUrl(base)}/v${version}/SHA256SUMS`;
+}
+
+/** The hex digest for `fileName` in a SHA256SUMS text, or undefined. */
+export function expectedDigest(sumsText, fileName) {
+  for (const line of sumsText.split(/\r?\n/)) {
+    const m = line.trim().match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
+    if (m && m[2].trim() === fileName) return m[1].toLowerCase();
+  }
+  return undefined;
 }
 
 /** Dependencies that are not usably installed under `root`.

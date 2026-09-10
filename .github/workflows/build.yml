@@ -79,7 +79,12 @@ jobs:
         with:
           path: assets
           merge-multiple: true
-      - name: Attach the binaries to the release
+      # bootstrap.mjs refuses a downloaded addon whose SHA-256 is not listed here.
+      - name: Write SHA256SUMS
+        run: cd assets && sha256sum starmemory_native.*.node > SHA256SUMS && cat SHA256SUMS
+      - name: Attach the binaries and checksums to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: assets/starmemory_native.*.node
+          files: |
+            assets/starmemory_native.*.node
+            assets/SHA256SUMS

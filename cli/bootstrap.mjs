@@ -9,9 +9,12 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
+  addonChecksumsUrl,
   addonDownloadUrl,
   addonRelativePath,
+  expectedDigest,
   findMissingAddons,
   findMissingDeps,
   isSupportedPlatform,
@@ -63,29 +66,46 @@ function runNpmInstall(root) {
   });
 }
 
+async function fetchOk(fetchImpl, url, what) {
+  const response = await fetchImpl(url, { redirect: 'follow' });
+  if (!response.ok) throw new Error(`could not download ${what}: HTTP ${response.status} from ${url}`);
+  return response;
+}
+
 /** Fetch this platform's prebuilt addon from the release matching
- * package.json's version. Written beside the target and renamed in: the file
- * is not mapped by anyone yet, so the rename is safe on Windows too. Throws
- * with the URL in the message on any failure, leaving no partial file behind.
- * Design doc windows-support §04. */
+ * package.json's version, and refuse it unless its SHA-256 matches the
+ * release's SHA256SUMS. This is native code that the MCP server and the hook
+ * load into their own process, so a truncated or tampered download must not
+ * land. Written beside the target and renamed in: the file is not mapped by
+ * anyone yet, so the rename is safe on Windows too. Throws with the URL in
+ * the message on any failure, leaving no partial file behind. Design doc
+ * windows-support §04. */
 export async function downloadAddon(root, { version, tag = platformTag(), fetchImpl = fetch, log: report = log } = {}) {
   const url = addonDownloadUrl(version, tag);
   const target = path.join(root, addonRelativePath(tag));
-  const part = `${target}.${process.pid}.part`;
+  const fileName = path.basename(target);
   report(`starmemory: fetching the ${tag} native addon from ${url} (first run only)...`);
-  const response = await fetchImpl(url, { redirect: 'follow' });
-  if (!response.ok) {
-    throw new Error(`could not download the native addon: HTTP ${response.status} from ${url}`);
+
+  const sums = await (await fetchOk(fetchImpl, addonChecksumsUrl(version), 'the release checksums')).text();
+  const expected = expectedDigest(sums, fileName);
+  if (!expected) throw new Error(`the release's SHA256SUMS has no entry for ${fileName}; not installing an unverifiable binary`);
+
+  const bytes = Buffer.from(await (await fetchOk(fetchImpl, url, 'the native addon')).arrayBuffer());
+  const actual = createHash('sha256').update(bytes).digest('hex');
+  if (actual !== expected) {
+    throw new Error(`the downloaded ${fileName} does not match the release checksum (got ${actual.slice(0, 12)}..., expected ${expected.slice(0, 12)}...); not installing it`);
   }
+
   fs.mkdirSync(path.dirname(target), { recursive: true });
+  const part = `${target}.${process.pid}.part`;
   try {
-    fs.writeFileSync(part, Buffer.from(await response.arrayBuffer()));
+    fs.writeFileSync(part, bytes);
     fs.renameSync(part, target);
   } catch (error) {
     fs.rmSync(part, { force: true });
     throw error;
   }
-  report(`starmemory: native addon saved to ${target}`);
+  report(`starmemory: native addon saved to ${target} (sha256 verified)`);
   return target;
 }
 
