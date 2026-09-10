@@ -8,10 +8,69 @@
 // Chinese + English with a 61k vocabulary: 493 MB RSS, 156 MB on disk, and on
 // the same test 80/70/80/80 (zh→zh, en→en, zh→en, en→zh) against bge-m3's
 // 80/80/80/80 -- one query apart. Apache-2.0. Design doc §18/§19 has the numbers.
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
 import { pipeline, env } from '@huggingface/transformers';
+export const MODEL_ID = 'Xenova/jina-embeddings-v2-base-zh';
+/** Where downloaded models live: `STARMEMORY_MODEL_CACHE_PATH`, else
+ * `~/.config/starmemory/models`. transformers.js defaults to a `.cache` inside
+ * its own node_modules, which sits inside the plugin install; every plugin
+ * update is a fresh install directory, so the 160 MB model was downloaded
+ * again and the first search after an update waited about 90 seconds. One
+ * directory shared by every installed version and the dev checkout instead. */
+export function defaultModelCacheDir(processEnv = process.env) {
+    return processEnv.STARMEMORY_MODEL_CACHE_PATH ?? path.join(os.homedir(), '.config', 'starmemory', 'models');
+}
+/** transformers.js's own default, inside this install's node_modules. Installs
+ * made before the shared cache existed have the model here. */
+export function legacyModelCacheDir() {
+    // The package's exports map hides package.json, so resolve the entry point
+    // and cut the path back to the package root.
+    const entry = createRequire(import.meta.url).resolve('@huggingface/transformers');
+    const marker = path.join('node_modules', '@huggingface', 'transformers');
+    const root = entry.slice(0, entry.indexOf(marker) + marker.length);
+    return path.join(root, '.cache');
+}
+/** Copy `modelId` from an old per-install cache into the shared one, so the
+ * first run after this change costs a local copy rather than a download.
+ * Returns whether anything was copied: nothing when the shared cache already
+ * has the model, or the old cache never had it.
+ *
+ * The SessionStart hook's sync and the MCP server start at the same moment
+ * and both call this, so the copy goes to a staging directory named after
+ * this pid and is renamed into place in one step: a reader never finds a
+ * half-copied model under the real name, and the loser of the race simply
+ * discards its copy. */
+export function seedModelCache(sharedDir, legacyDir, modelId) {
+    const target = path.join(sharedDir, modelId);
+    const source = path.join(legacyDir, modelId);
+    if (fs.existsSync(target) || !fs.existsSync(source))
+        return false;
+    const staging = seedStagingPath(sharedDir, modelId);
+    try {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.cpSync(source, staging, { recursive: true });
+        fs.renameSync(staging, target);
+        return true;
+    }
+    catch (err) {
+        fs.rmSync(staging, { recursive: true, force: true });
+        // Another process finished first: its copy is as good as ours.
+        if (fs.existsSync(target))
+            return false;
+        throw err;
+    }
+}
+/** Where seedModelCache copies to before the rename: next to the model,
+ * named after this pid. */
+export function seedStagingPath(sharedDir, modelId) {
+    return `${path.join(sharedDir, modelId)}.seed-${process.pid}`;
+}
 env.allowLocalModels = true;
 env.useBrowserCache = false;
-const MODEL_ID = 'Xenova/jina-embeddings-v2-base-zh';
+env.cacheDir = defaultModelCacheDir();
 const MODEL_DTYPE = 'q8';
 export const EMBEDDING_DIM = 768;
 /** Identity of the model every stored vector came from. A store whose recorded
@@ -25,6 +84,7 @@ export const BGE_QUERY_PREFIX = '';
 let embeddingPipeline = null;
 export async function initEmbeddings() {
     if (!embeddingPipeline) {
+        seedModelCache(env.cacheDir, legacyModelCacheDir(), MODEL_ID);
         embeddingPipeline = (await pipeline('feature-extraction', MODEL_ID, {
             dtype: MODEL_DTYPE,
             progress_callback: () => { },

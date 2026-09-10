@@ -136,7 +136,9 @@ describe('where the index file lives', () => {
 
   it('adopts a pre-generation file as generation 0 instead of rebuilding it', () => {
     insertAlong(0);
-    openIndex();
+    // Build a real index file, then let go of it: the rename below is exactly
+    // the move Windows refuses while a reader still has the file mapped.
+    openIndex().close();
     // Turn the clock back: a store from before generations has the versioned
     // file and no generation key.
     fs.renameSync(current(), versionedVectorIndexPath(base));

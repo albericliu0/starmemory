@@ -10,7 +10,8 @@
       "env_vars": [
         "STARMEMORY_DB_PATH",
         "STARMEMORY_INDEX_PATH",
-        "STARMEMORY_TEXT_INDEX_PATH"
+        "STARMEMORY_TEXT_INDEX_PATH",
+        "STARMEMORY_MODEL_CACHE_PATH"
       ]
     }
   }
