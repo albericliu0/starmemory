@@ -14,7 +14,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Built by `npm run build:native`. `dist/` and `src/` sit at the same depth
  * relative to the crate, so one relative path serves both. */
-export const ADDON_PATH = path.resolve(here, '..', 'native', 'starmemory_native.node');
+/** One file per platform, named by `<platform>-<arch>` (cli/install-check.mjs). */
+export const ADDON_PATH = path.resolve(here, '..', 'native', `starmemory_native.${process.platform}-${process.arch}.node`);
 
 export interface NativeTextDoc {
   id: number;

@@ -1,5 +1,6 @@
 /** Built by `npm run build:native`. `dist/` and `src/` sit at the same depth
  * relative to the crate, so one relative path serves both. */
+/** One file per platform, named by `<platform>-<arch>` (cli/install-check.mjs). */
 export declare const ADDON_PATH: string;
 export interface NativeTextDoc {
     id: number;

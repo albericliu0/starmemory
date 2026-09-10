@@ -7,9 +7,12 @@ import path from 'node:path';
 // @ts-expect-error -- plain JS module, no type declarations by design
 import {
   RUNTIME_DEPENDENCIES,
+  SUPPORTED_PLATFORMS,
+  addonRelativePath,
   findMissingDeps,
   findMissingAddons,
   isSupportedPlatform,
+  platformTag,
   unsupportedPlatformMessage,
 } from '../cli/install-check.mjs';
 
@@ -64,45 +67,58 @@ describe('findMissingDeps', () => {
 });
 
 describe('findMissingAddons', () => {
-  // One addon now: tantivy BM25 and usearch HNSW live in the same Rust crate,
-  // replacing the separate vendored C++ faiss/tenann module.
-  const ADDON = 'native/starmemory_native.node';
-
-  it('reports the addon when it has not been built', () => {
-    expect(findMissingAddons(root)).toEqual([ADDON]);
+  // One addon per platform: tantivy BM25 and usearch HNSW live in the same Rust
+  // crate, named native/starmemory_native.<platform>-<arch>.node.
+  it('names the file for this machine when it has not been built', () => {
+    expect(findMissingAddons(root)).toEqual([addonRelativePath(platformTag())]);
   });
 
   it('reports nothing once it is present', () => {
-    writeAddon(ADDON);
+    writeAddon(addonRelativePath(platformTag()));
 
     expect(findMissingAddons(root)).toEqual([]);
+  });
+
+  it('looks for the named platform, not the running one', () => {
+    writeAddon('native/starmemory_native.darwin-arm64.node');
+
+    expect(findMissingAddons(root, 'linux-x64')).toEqual(['native/starmemory_native.linux-x64.node']);
+    expect(findMissingAddons(root, 'darwin-arm64')).toEqual([]);
+  });
+});
+
+describe('platformTag', () => {
+  it('joins platform and arch the way the addon files are named', () => {
+    expect(platformTag('win32', 'x64')).toBe('win32-x64');
+    expect(addonRelativePath('linux-arm64')).toBe('native/starmemory_native.linux-arm64.node');
   });
 });
 
 describe('isSupportedPlatform', () => {
-  it('accepts an Apple Silicon Mac, which is what this build ships for', () => {
+  it('accepts every platform a release ships binaries for', () => {
+    expect(SUPPORTED_PLATFORMS).toEqual(['darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64']);
     expect(isSupportedPlatform('darwin', 'arm64')).toBe(true);
+    expect(isSupportedPlatform('linux', 'x64')).toBe(true);
+    expect(isSupportedPlatform('linux', 'arm64')).toBe(true);
+    expect(isSupportedPlatform('win32', 'x64')).toBe(true);
   });
 
-  it('rejects an Intel Mac, because the addons are arm64 only', () => {
+  it('rejects an Intel Mac and other platforms with no binary', () => {
     expect(isSupportedPlatform('darwin', 'x64')).toBe(false);
-  });
-
-  it('rejects Linux and Windows', () => {
-    expect(isSupportedPlatform('linux', 'x64')).toBe(false);
-    expect(isSupportedPlatform('win32', 'x64')).toBe(false);
+    expect(isSupportedPlatform('freebsd', 'x64')).toBe(false);
+    expect(isSupportedPlatform('win32', 'arm64')).toBe(false);
   });
 });
 
 describe('unsupportedPlatformMessage', () => {
-  it('names the platform it actually found, so the reason is obvious', () => {
-    const message = unsupportedPlatformMessage('linux', 'x64');
+  it('names the platform it actually found and every one it supports', () => {
+    const message = unsupportedPlatformMessage('freebsd', 'x64');
 
-    expect(message).toContain('linux-x64');
-    expect(message).toContain('darwin-arm64');
+    expect(message).toContain('freebsd-x64');
+    for (const tag of SUPPORTED_PLATFORMS) expect(message).toContain(tag);
   });
 
   it('says how to proceed rather than only what failed', () => {
-    expect(unsupportedPlatformMessage('darwin', 'x64')).toMatch(/build|编译|npm run build/i);
+    expect(unsupportedPlatformMessage('darwin', 'x64')).toMatch(/build|npm run build/i);
   });
 });
