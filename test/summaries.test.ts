@@ -9,7 +9,7 @@ import {
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-summaries-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 const HOUR = 60 * 60 * 1000;
 const now = Date.parse('2026-09-09T12:00:00Z');

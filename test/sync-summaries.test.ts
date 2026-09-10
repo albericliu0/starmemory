@@ -10,6 +10,16 @@ import { VectorIndex } from '../src/vector-index.js';
 import { initEmbeddings } from '../src/embeddings.js';
 import { syncAll } from '../src/sync.js';
 
+/** Every VectorIndex opened here, closed in teardown: Windows cannot delete
+ * a file that is still mapped, so a leaked handle fails the cleanup. */
+const openedIndexes: VectorIndex[] = [];
+function openIndex(s: StoreHandle, p: string): VectorIndex {
+  const i = VectorIndex.open(s, p);
+  openedIndexes.push(i);
+  return i;
+}
+
+
 const HOUR = 60 * 60 * 1000;
 let dir: string;
 let store: StoreHandle;
@@ -59,8 +69,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const summaryFile = (harness: string, project: string, name: string) => path.join(archiveRoot, harness, project, `${name}-summary.txt`);
@@ -75,7 +86,7 @@ describe('the summary step', () => {
       claude: async (i: { sessionId?: string; cwd?: string }) => { seen.push(`claude:${i.sessionId}:${i.cwd}`); return 'Claude said.'; },
       codex: async (i: { threadId?: string }) => { seen.push(`codex:${i.threadId}`); return 'Codex said.'; },
     };
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
 
     const result = await syncAll(store, index, [path.join(dir, 'transcripts'), path.join(dir, 'codex-sessions')], undefined, { archiveRoot, summaries: { summarizers } });
 
@@ -89,7 +100,7 @@ describe('the summary step', () => {
 
   it('writes an error sentinel when the summarizer throws and retries it next time', async () => {
     ageTo(transcript('-Users-me-proj', 'flaky', 1), 3 * HOUR);
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
     let calls = 0;
     const summarizers = {
       claude: async () => { calls++; if (calls === 1) throw new Error('not logged in'); return 'Second time lucky.'; },
@@ -112,7 +123,7 @@ describe('the summary step', () => {
 
   it('respects the per-run limit and takes the newest first', async () => {
     for (let i = 0; i < 4; i++) ageTo(transcript('-Users-me-proj', `c${i}`, 1), (3 + i) * HOUR);
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
     const seen: string[] = [];
     const summarizers = { claude: async (i: { sessionId?: string }) => { seen.push(i.sessionId!); return 's'; }, codex: async () => '' };
 
@@ -123,7 +134,7 @@ describe('the summary step', () => {
 
   it('does nothing when the limit is zero', async () => {
     ageTo(transcript('-Users-me-proj', 'q', 1), 3 * HOUR);
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
     const summarizers = { claude: async () => 'never', codex: async () => 'never' };
 
     const result = await syncAll(store, index, path.join(dir, 'transcripts'), undefined, { archiveRoot, summaries: { summarizers, limit: 0 } });
@@ -138,7 +149,7 @@ describe('the summary step', () => {
     const file = path.join(projectDir, 'empty.jsonl');
     fs.writeFileSync(file, JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'x' }) + '\n');
     ageTo(file, 3 * HOUR);
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
     const summarizers = { claude: async () => 'never', codex: async () => 'never' };
 
     const result = await syncAll(store, index, path.join(dir, 'transcripts'), undefined, { archiveRoot, summaries: { summarizers } });

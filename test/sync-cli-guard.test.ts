@@ -22,6 +22,6 @@ describe('starmemory sync inside a summarizer child', () => {
     expect(r.status).toBe(0);
     expect(r.stdout + r.stderr).toBe('');
     expect(fs.readdirSync(dir)).toEqual([]);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 });

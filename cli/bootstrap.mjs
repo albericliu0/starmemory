@@ -36,8 +36,11 @@ function log(message) {
  * with a PATH that has neither node nor npm; run-node.sh found node for us, so
  * npm is almost certainly beside it. Fall back to PATH for the rare split. */
 function findNpm() {
-  const beside = path.join(path.dirname(process.execPath), 'npm');
-  return fs.existsSync(beside) ? beside : 'npm';
+  // On Windows npm is npm.cmd, and cmd scripts need a shell to run; on POSIX
+  // it is a shebang script beside node.
+  const name = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const beside = path.join(path.dirname(process.execPath), name);
+  return fs.existsSync(beside) ? beside : name;
 }
 
 function runNpmInstall(root) {
@@ -46,10 +49,14 @@ function runNpmInstall(root) {
     // npm is a script with a `#!/usr/bin/env node` shebang, so node's directory
     // has to be on the child's PATH as well, not just known to us.
     const nodeDir = path.dirname(process.execPath);
+    const fallbackPath = process.platform === 'win32' ? '' : '/usr/bin:/bin';
     const child = spawn(findNpm(), ['install', '--omit=dev', '--no-audit', '--no-fund'], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${nodeDir}:${process.env.PATH || '/usr/bin:/bin'}` },
+      // path.delimiter: ':' on POSIX, ';' on Windows.
+      env: { ...process.env, PATH: `${nodeDir}${path.delimiter}${process.env.PATH || fallbackPath}` },
+      shell: process.platform === 'win32',
+      windowsHide: true,
     });
     // npm's progress goes to stderr so it cannot corrupt the MCP stdio channel.
     child.stdout.on('data', (d) => process.stderr.write(d));

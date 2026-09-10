@@ -6,12 +6,12 @@ import { archivePathFor, copyIfChanged, defaultArchiveRoot, readArchive, resolve
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-archive-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 describe('where a copy lives', () => {
   it('is root/harness/project/basename', () => {
-    expect(archivePathFor('/a', 'codex', 'proj', '/x/y/rollout-1.jsonl')).toBe('/a/codex/proj/rollout-1.jsonl.gz');
-    expect(archivePathFor('/a', 'codex', 'proj', '/x/y/rollout-1.jsonl.gz')).toBe('/a/codex/proj/rollout-1.jsonl.gz');
+    expect(archivePathFor('/a', 'codex', 'proj', '/x/y/rollout-1.jsonl')).toBe(path.join('/a', 'codex', 'proj', 'rollout-1.jsonl.gz'));
+    expect(archivePathFor('/a', 'codex', 'proj', '/x/y/rollout-1.jsonl.gz')).toBe(path.join('/a', 'codex', 'proj', 'rollout-1.jsonl.gz'));
   });
   it('defaults under ~/.config/starmemory unless STARMEMORY_ARCHIVE_PATH says otherwise', () => {
     expect(defaultArchiveRoot({})).toBe(path.join(os.homedir(), '.config', 'starmemory', 'archive'));

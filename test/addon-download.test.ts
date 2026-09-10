@@ -42,7 +42,7 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.STARMEMORY_ADDON_BASE_URL;
   await new Promise<void>((r) => server.close(() => r()));
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('release URLs', () => {

@@ -48,7 +48,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('filterIds', () => {

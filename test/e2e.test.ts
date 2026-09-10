@@ -74,8 +74,9 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  index.close();
   await store.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('vector search', () => {
@@ -154,7 +155,10 @@ describe('a sync landing while the server is up', () => {
       },
       await generateExchangeEmbedding(user, assistant)
     );
-    VectorIndex.open(store, path.join(tmpDir, 'index.hnsw')).rebuild(store);
+    const rebuilder = VectorIndex.open(store, path.join(tmpDir, 'index.hnsw'));
+    rebuilder.rebuild(store);
+    rebuilder.close();
+    index.refresh();
   }, 60_000);
 
   it('search() answers from the rebuilt index', async () => {

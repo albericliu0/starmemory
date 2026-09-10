@@ -11,6 +11,16 @@ import { initEmbeddings } from '../src/embeddings.js';
 import { syncAll } from '../src/sync.js';
 import { readArchive } from '../src/archive.js';
 
+/** Every VectorIndex opened here, closed in teardown: Windows cannot delete
+ * a file that is still mapped, so a leaked handle fails the cleanup. */
+const openedIndexes: VectorIndex[] = [];
+function openIndex(s: StoreHandle, p: string): VectorIndex {
+  const i = VectorIndex.open(s, p);
+  openedIndexes.push(i);
+  return i;
+}
+
+
 let dir: string;
 let store: StoreHandle;
 
@@ -36,15 +46,16 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('syncAll with an archive', () => {
   it('copies each transcript and points the rows at the copy', async () => {
     const source = transcript('-Users-me-proj', 's1', 2);
     const archiveRoot = path.join(dir, 'archive');
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
 
     const result = await syncAll(store, index, path.join(dir, 'transcripts'), undefined, { archiveRoot });
 
@@ -58,7 +69,7 @@ describe('syncAll with an archive', () => {
 
   it('does not copy or index again when nothing changed, and picks up new lines when the source grows', async () => {
     const archiveRoot = path.join(dir, 'archive');
-    const index = VectorIndex.open(store, path.join(dir, 'index.hnsw'));
+    const index = openIndex(store, path.join(dir, 'index.hnsw'));
     const transcripts = path.join(dir, 'transcripts');
 
     const unchanged = await syncAll(store, index, transcripts, undefined, { archiveRoot });

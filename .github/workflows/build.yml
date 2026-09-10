@@ -55,6 +55,13 @@ jobs:
         run: cargo test
         working-directory: native
 
+      # vitest runs test files in parallel workers; on Windows two workers
+      # writing the same model file into the cache collide (EPERM on rename).
+      # Fetch it once, single-threaded, before the suite starts.
+      - name: Warm the embedding model cache
+        run: npx tsc -p tsconfig.json && node -e "import('./dist/embeddings.js').then(m => m.initEmbeddings())"
+        shell: bash
+
       - name: TypeScript tests
         run: npx vitest run
         shell: bash

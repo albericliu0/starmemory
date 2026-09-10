@@ -8,7 +8,7 @@ import type { ConversationExchange } from '../src/types.js';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-format-')); });
-afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
 function exchange(id: number, name: string): ConversationExchange {
   const copy = path.join(dir, 'archive', 'claude', 'proj', `${name}.jsonl.gz`);

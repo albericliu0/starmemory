@@ -345,6 +345,8 @@ async function parseClaudeConversation(
 /** Derives a project name the same way episodic-memory does: the JSONL file's
  * parent directory name (Claude Code's sanitized-cwd slug). */
 export function projectFromPath(filePath: string): string {
-  const parts = filePath.split('/');
-  return parts.length >= 2 ? parts[parts.length - 2] : 'unknown';
+  // path.basename(path.dirname()) rather than a split on '/', so a Windows
+  // path yields its parent directory too.
+  const parent = path.basename(path.dirname(filePath));
+  return parent && parent !== '.' && parent !== path.sep ? parent : 'unknown';
 }

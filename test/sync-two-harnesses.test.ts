@@ -10,6 +10,16 @@ import { VectorIndex } from '../src/vector-index.js';
 import { initEmbeddings } from '../src/embeddings.js';
 import { syncAll, defaultTranscriptDirs } from '../src/sync.js';
 
+/** Every VectorIndex opened here, closed in teardown: Windows cannot delete
+ * a file that is still mapped, so a leaked handle fails the cleanup. */
+const openedIndexes: VectorIndex[] = [];
+function openIndex(s: StoreHandle, p: string): VectorIndex {
+  const i = VectorIndex.open(s, p);
+  openedIndexes.push(i);
+  return i;
+}
+
+
 let dir: string;
 let store: StoreHandle;
 
@@ -47,13 +57,14 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('syncAll over both harness directories', () => {
   it('stores exchanges from Claude Code and Codex in the same store, each tagged', async () => {
-    const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
+    const index = openIndex(store, path.join(dir, 'index.usearch'));
 
     const result = await syncAll(store, index, [claudeDir(), codexDir()], undefined, { archiveRoot: path.join(dir, 'archive') });
 
@@ -67,7 +78,7 @@ describe('syncAll over both harness directories', () => {
   }, 120_000);
 
   it('skips a source directory that does not exist instead of failing', async () => {
-    const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
+    const index = openIndex(store, path.join(dir, 'index.usearch'));
 
     const result = await syncAll(store, index, [path.join(dir, 'nowhere')], undefined, { archiveRoot: path.join(dir, 'archive') });
 
@@ -89,7 +100,7 @@ describe('rows from before Codex support', () => {
 
       // The row is from January and its source is gone: the TTL would expire it,
       // which is right in general but not what this test is about.
-      await syncAll(oldStore, VectorIndex.open(oldStore, path.join(dir, 'old-index.usearch')), [], undefined, { archiveRoot: path.join(dir, 'archive'), ttl: { days: 0 } });
+      await syncAll(oldStore, openIndex(oldStore, path.join(dir, 'old-index.usearch')), [], undefined, { archiveRoot: path.join(dir, 'archive'), ttl: { days: 0 } });
 
       expect(filterIds(oldStore, { harness: 'claude' })).toEqual([0]);
     } finally {
@@ -102,12 +113,12 @@ describe('defaultTranscriptDirs', () => {
   it('lists the Claude Code projects dir and the Codex sessions dir', () => {
     const dirs = defaultTranscriptDirs({ HOME: '/Users/me' });
 
-    expect(dirs).toEqual(['/Users/me/.claude/projects', '/Users/me/.codex/sessions']);
+    expect(dirs).toEqual([path.join('/Users/me', '.claude', 'projects'), path.join('/Users/me', '.codex', 'sessions')]);
   });
 
   it('honours CLAUDE_CONFIG_DIR and CODEX_HOME, the same overrides each harness uses', () => {
     const dirs = defaultTranscriptDirs({ HOME: '/Users/me', CLAUDE_CONFIG_DIR: '/p/claude', CODEX_HOME: '/p/codex' });
 
-    expect(dirs).toEqual(['/p/claude/projects', '/p/codex/sessions']);
+    expect(dirs).toEqual([path.join('/p/claude', 'projects'), path.join('/p/codex', 'sessions')]);
   });
 });

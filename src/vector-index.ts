@@ -294,6 +294,16 @@ export class VectorIndex {
     return this.opened;
   }
 
+  /** Unmap the index file. On Windows a mapped file cannot be deleted, so a
+   * process that is done with an index (a test tearing down, a CLI run about
+   * to exit) should close rather than wait for garbage collection. Idempotent;
+   * search() and size() answer empty afterwards. */
+  close(): void {
+    this.searcher?.close();
+    this.searcher = null;
+    this.opened = null;
+  }
+
   /** Top-k by cosine similarity, optionally restricted to `filterIds`.
    *
    * The filter runs inside the graph traversal, so a filtered query does not

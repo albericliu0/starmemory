@@ -24,6 +24,12 @@ import { addon } from '../src/addon.js';
 let dir: string;
 let store: StoreHandle;
 let base: string;
+const openedIndexes: VectorIndex[] = [];
+function openIndex(): VectorIndex {
+  const i = VectorIndex.open(store, base);
+  openedIndexes.push(i);
+  return i;
+}
 
 /** A unit vector pointing along one axis, so results are unambiguous. */
 function axis(i: number): Float32Array {
@@ -73,8 +79,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('where the index file lives', () => {
@@ -89,7 +96,7 @@ describe('where the index file lives', () => {
   it('starts at generation 0 and records it in the store', () => {
     insertAlong(0);
 
-    const index = VectorIndex.open(store, base);
+    const index = openIndex();
 
     expect(fs.existsSync(base)).toBe(false);
     expect(gen()).toBe(0);
@@ -100,7 +107,7 @@ describe('where the index file lives', () => {
 
   it('moves to the next generation on rebuild and drops the old file', () => {
     insertAlong(0);
-    const index = VectorIndex.open(store, base);
+    const index = openIndex();
 
     const first = current();
     ageTo(first, 2 * 60 * 1000); // old enough for the sweep to take it
@@ -115,7 +122,7 @@ describe('where the index file lives', () => {
 
   it('leaves a file written in the last minute alone when sweeping, since it may be another sync\'s', () => {
     insertAlong(0);
-    const index = VectorIndex.open(store, base);
+    const index = openIndex();
     const someoneElses = generationPath(base, 0, 99999);
     fs.writeFileSync(someoneElses, 'fresh build by another process');
 
@@ -129,7 +136,7 @@ describe('where the index file lives', () => {
 
   it('adopts a pre-generation file as generation 0 instead of rebuilding it', () => {
     insertAlong(0);
-    VectorIndex.open(store, base);
+    openIndex();
     // Turn the clock back: a store from before generations has the versioned
     // file and no generation key.
     fs.renameSync(current(), versionedVectorIndexPath(base));
@@ -139,7 +146,7 @@ describe('where the index file lives', () => {
     const aged = fs.statSync(versionedVectorIndexPath(base)).mtimeMs;
     expect(aged).not.toBe(before);
 
-    const index = VectorIndex.open(store, base);
+    const index = openIndex();
 
     expect(gen()).toBe(0);
     expect(fs.existsSync(versionedVectorIndexPath(base))).toBe(false);
@@ -151,7 +158,7 @@ describe('where the index file lives', () => {
     fs.writeFileSync(base, 'an index from before the versioned path');
     insertAlong(0);
 
-    VectorIndex.open(store, base);
+    openIndex();
 
     expect(fs.existsSync(base)).toBe(false);
   });
@@ -166,7 +173,7 @@ describe('where the index file lives', () => {
     for (const f of [staleOther, staleOtherLegacy, freshOther, unrelated]) fs.writeFileSync(f, 'some index');
     for (const f of [staleOther, staleOtherLegacy, unrelated]) ageTo(f, 40 * DAY_MS);
 
-    VectorIndex.open(store, base);
+    openIndex();
 
     expect(fs.existsSync(staleOther)).toBe(false);
     expect(fs.existsSync(staleOtherLegacy)).toBe(false);
@@ -178,12 +185,12 @@ describe('where the index file lives', () => {
 
   it('reopens an existing generation instead of rebuilding it', () => {
     insertAlong(0);
-    VectorIndex.open(store, base);
+    openIndex();
     const file = current();
     ageTo(file, 5 * DAY_MS);
     const before = fs.statSync(file).mtimeMs;
 
-    VectorIndex.open(store, base);
+    openIndex();
 
     expect(fs.statSync(file).mtimeMs).toBe(before);
     expect(current()).toBe(file);
@@ -193,14 +200,14 @@ describe('where the index file lives', () => {
 describe('a long-lived reader while another handle rebuilds the index', () => {
   it('serves the rebuilt graph after refresh()', () => {
     const firstId = insertAlong(0);
-    const reader = VectorIndex.open(store, base);
+    const reader = openIndex();
     expect(reader.size()).toBe(1);
     // Only one vector exists, so it is the nearest even to an orthogonal query.
     expect(reader.search(axis(1), 1).map((h) => h.id)).toEqual([firstId]);
 
     // The sync process: new rows, then a rebuild into the next generation.
     const newId = insertAlong(1);
-    VectorIndex.open(store, base).rebuild(store);
+    openIndex().rebuild(store);
     reader.refresh();
 
     expect(reader.size()).toBe(2);
@@ -211,7 +218,7 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
 
   it('does not reopen while the store still names its generation', () => {
     insertAlong(0);
-    const reader = VectorIndex.open(store, base);
+    const reader = openIndex();
     const closeSpy = vi.spyOn(searcherOf(reader), 'close');
 
     reader.refresh();
@@ -223,10 +230,10 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
 
   it('releases the graph it opened first once it has switched to the new one', () => {
     insertAlong(0);
-    const reader = VectorIndex.open(store, base);
+    const reader = openIndex();
     const closeSpy = vi.spyOn(searcherOf(reader), 'close');
 
-    VectorIndex.open(store, base).rebuild(store);
+    openIndex().rebuild(store);
     reader.refresh();
 
     expect(closeSpy).toHaveBeenCalledTimes(1);
@@ -236,9 +243,9 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
     // The old generation is only swept by the writer after it has switched;
     // until then, and on Windows for as long as we map it, our file is intact.
     insertAlong(0);
-    const reader = VectorIndex.open(store, base);
+    const reader = openIndex();
     const mine = reader.currentPath;
-    const writer = VectorIndex.open(store, base);
+    const writer = openIndex();
     insertAlong(1);
 
     writer.rebuild(store);
@@ -251,7 +258,7 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
 
   it('gives up on a generation it cannot open instead of retrying every call', () => {
     insertAlong(0);
-    const reader = VectorIndex.open(store, base);
+    const reader = openIndex();
     // A writer that produced garbage and still pointed the store at it.
     const garbage = generationPath(base, 1, 77777);
     fs.writeFileSync(garbage, 'not an index');
@@ -275,7 +282,7 @@ describe('a long-lived reader while another handle rebuilds the index', () => {
 describe('a closed native searcher', () => {
   it('refuses further use rather than touching freed memory', () => {
     insertAlong(0);
-    VectorIndex.open(store, base);
+    openIndex();
     const searcher = addon().VectorSearcher.open(
       { dim: EMBEDDING_DIM, connectivity: 16, expansionAdd: 40, expansionSearch: 64 },
       current()

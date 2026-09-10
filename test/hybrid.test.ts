@@ -84,8 +84,9 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  vectors.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const CHINESE_LEAK = '最后定位到是内存的泄漏';

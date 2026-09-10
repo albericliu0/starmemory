@@ -5,19 +5,22 @@
 // open() we load the file if it is there and usable, otherwise we rebuild from
 // every vector in LMDB.
 //
-// A rebuild never touches the file a reader may have mapped. It writes the next
-// generation (`index-v2.g7.hnsw` after `index-v2.g6.hnsw`) and records that
-// number in LMDB meta; a reader switches when it sees the number change. That
-// is the one mechanism on every platform: Windows refuses to replace or delete
-// a mapped file, so the POSIX rename trick was never going to travel (design
-// doc windows-support §07).
+// A rebuild never touches a file a reader may have mapped. It writes a fresh
+// file (`index-v2.g7-48213.hnsw`: generation 7, written by pid 48213) and
+// records that file's name in LMDB meta; a reader switches when the name
+// changes. The pid is what keeps two syncs that rebuild at the same moment
+// (sync-race.test.ts shows they do) from writing the same path, which is the
+// in-place overwrite this whole scheme exists to avoid. That is the one
+// mechanism on every platform: Windows refuses to replace or delete a mapped
+// file, so the POSIX rename trick was never going to travel (design doc
+// windows-support §07).
 import fs from 'node:fs';
 import path from 'node:path';
 import { EMBEDDING_DIM } from './embeddings.js';
 import { allVectors } from './store.js';
 import { addon } from './addon.js';
-/** LMDB meta key holding the generation readers should be on. */
-export const VECTOR_GENERATION_KEY = 'vector_index_generation';
+/** LMDB meta key holding the file name (basename) readers should be on. */
+export const VECTOR_INDEX_FILE_KEY = 'vector_index_file';
 /** The addon generation is spliced into the file name: `index.hnsw` becomes
  * `index-v2.hnsw`. Two builds with different on-disk layouts then never read
  * each other's file (design doc §10, as for the text index directory). This
@@ -27,19 +30,24 @@ export function versionedVectorIndexPath(basePath) {
     const stem = basePath.slice(0, basePath.length - ext.length);
     return `${stem}-v${addon().vectorIndexVersion()}${ext}`;
 }
-/** `index.hnsw` + generation 3 -> `index-v2.g3.hnsw`. */
-export function generationPath(basePath, generation) {
+/** `index.hnsw`, generation 3, pid 48213 -> `index-v2.g3-48213.hnsw`. */
+export function generationPath(basePath, generation, pid = process.pid) {
     const ext = path.extname(basePath);
     const stem = basePath.slice(0, basePath.length - ext.length);
-    return `${stem}-v${addon().vectorIndexVersion()}.g${generation}${ext}`;
+    return `${stem}-v${addon().vectorIndexVersion()}.g${generation}-${pid}${ext}`;
 }
-/** The generation the store says is current, or undefined before the first build. */
-export function currentGeneration(store) {
-    const raw = store.meta.get(VECTOR_GENERATION_KEY);
-    if (raw === undefined || raw === null)
+/** The generation number encoded in an index file name, or undefined. */
+export function generationOf(file) {
+    const m = path.basename(file).match(/\.g(\d+)(?:-\d+)?\.[^.]+$/);
+    return m ? Number(m[1]) : undefined;
+}
+/** The file the store says readers should be on, or undefined before the first
+ * build. Stored as a basename; resolved beside `basePath`. */
+export function currentIndexFile(store, basePath) {
+    const raw = store.meta.get(VECTOR_INDEX_FILE_KEY);
+    if (typeof raw !== 'string' || raw === '' || raw.includes('/') || raw.includes('\\'))
         return undefined;
-    const n = Number(raw);
-    return Number.isInteger(n) && n >= 0 ? n : undefined;
+    return path.join(path.dirname(basePath), raw);
 }
 /** Delete the file a build older than versionedVectorIndexPath left at the
  * bare base path. It is a cache, so nothing is lost. */
@@ -62,12 +70,20 @@ function escapeRegExp(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 /** Files that belong to this index family: `<stem>-v<N>.hnsw` (legacy) and
- * `<stem>-v<N>.g<G>.hnsw`. */
+ * `<stem>-v<N>.g<G>-<pid>.hnsw`. */
 function familyPattern(basePath) {
     const ext = path.extname(basePath);
     const stem = path.basename(basePath, ext);
-    return new RegExp(`^${escapeRegExp(stem)}-v\\d+(?:\\.g\\d+)?${escapeRegExp(ext)}$`);
+    return new RegExp(`^${escapeRegExp(stem)}-v\\d+(?:\\.g\\d+(?:-\\d+)?)?${escapeRegExp(ext)}$`);
 }
+function sameVersionPattern(basePath) {
+    const ext = path.extname(basePath);
+    const stem = path.basename(basePath, ext);
+    return new RegExp(`^${escapeRegExp(stem)}-v${addon().vectorIndexVersion()}(?:\\.g\\d+(?:-\\d+)?)?${escapeRegExp(ext)}$`);
+}
+/** A file younger than this may be another sync's build in progress, or one it
+ * has just pointed the store at while we were sweeping. Leave it alone. */
+export const SWEEP_MIN_AGE_MS = 60 * 1000;
 function listFamily(basePath) {
     const parent = path.dirname(basePath);
     const pattern = familyPattern(basePath);
@@ -81,20 +97,20 @@ function listFamily(basePath) {
         return [];
     }
 }
-/** Remove other generations of the current version. Best effort: on Windows a
- * file another process still maps cannot be deleted, so the next rebuild tries
- * again. Returns what was removed. */
-export function sweepOtherGenerations(basePath, keep) {
-    const mine = generationPath(basePath, keep);
-    const version = addon().vectorIndexVersion();
-    const ext = path.extname(basePath);
-    const stem = path.basename(basePath, ext);
-    const sameVersion = new RegExp(`^${escapeRegExp(stem)}-v${version}(?:\\.g\\d+)?${escapeRegExp(ext)}$`);
+/** Remove other files of the current version: not the one the store names, not
+ * `keep` (our own), and not anything written in the last minute. Best effort:
+ * on Windows a file another process still maps cannot be deleted, so the next
+ * rebuild tries again. Returns what was removed. */
+export function sweepOtherGenerations(store, basePath, keep, { now = Date.now(), minAgeMs = SWEEP_MIN_AGE_MS } = {}) {
+    const named = currentIndexFile(store, basePath);
+    const sameVersion = sameVersionPattern(basePath);
     const removed = [];
     for (const file of listFamily(basePath)) {
-        if (file === mine || !sameVersion.test(path.basename(file)))
+        if (file === keep || file === named || !sameVersion.test(path.basename(file)))
             continue;
         try {
+            if (now - fs.statSync(file).mtimeMs < minAgeMs)
+                continue;
             fs.rmSync(file, { force: true });
             removed.push(file);
         }
@@ -108,10 +124,7 @@ export function sweepOtherGenerations(basePath, keep) {
  * current version's files, nor anything not shaped like a sibling of ours.
  * Returns the paths removed. */
 export function pruneStaleVectorIndexFiles(basePath, { now = Date.now(), maxIdleMs = VECTOR_INDEX_IDLE_MS } = {}) {
-    const version = addon().vectorIndexVersion();
-    const ext = path.extname(basePath);
-    const stem = path.basename(basePath, ext);
-    const sameVersion = new RegExp(`^${escapeRegExp(stem)}-v${version}(?:\\.g\\d+)?${escapeRegExp(ext)}$`);
+    const sameVersion = sameVersionPattern(basePath);
     const removed = [];
     for (const candidate of listFamily(basePath)) {
         if (sameVersion.test(path.basename(candidate)))
@@ -154,10 +167,10 @@ export class VectorIndex {
     basePath;
     options;
     searcher = null;
-    /** The generation `searcher` was opened from. */
+    /** The file `searcher` was opened from. */
     opened = null;
-    /** A generation we tried and failed to open. Not retried until the store
-     * names another one, so one bad file does not cost a failed open per search. */
+    /** A file we tried and failed to open. Not retried until the store names
+     * another one, so one bad file does not cost a failed open per search. */
     rejected = null;
     constructor(store, basePath, options) {
         this.store = store;
@@ -165,34 +178,35 @@ export class VectorIndex {
         this.options = options;
     }
     /** `basePath` is the unversioned name, `~/.config/starmemory/index.hnsw`;
-     * the file actually used is generationPath(basePath, currentGeneration). */
+     * the file actually used is whatever the store names (currentIndexFile). */
     static open(store, basePath, options = {}) {
         const opts = { ...DEFAULT_OPTIONS, ...options };
         removeLegacyVectorIndex(basePath);
         const index = new VectorIndex(store, basePath, opts);
-        let generation = currentGeneration(store);
-        if (generation === undefined) {
+        let file = currentIndexFile(store, basePath);
+        if (file === undefined) {
             // A store from before generations: its one file becomes g0 if we can
-            // move it (nobody has it mapped at this point on POSIX; on Windows a
-            // failed rename just means a rebuild).
+            // move it. Another process starting at the same moment loses the
+            // rename and rebuilds instead, into its own pid-named file.
             const legacy = versionedVectorIndexPath(basePath);
+            const adopted = generationPath(basePath, 0);
             if (fs.existsSync(legacy)) {
                 try {
-                    fs.renameSync(legacy, generationPath(basePath, 0));
-                    store.meta.putSync(VECTOR_GENERATION_KEY, '0');
-                    generation = 0;
+                    fs.renameSync(legacy, adopted);
+                    store.meta.putSync(VECTOR_INDEX_FILE_KEY, path.basename(adopted));
+                    file = adopted;
                 }
                 catch {
                     // fall through to a rebuild
                 }
             }
         }
-        if (generation === undefined) {
+        if (file === undefined) {
             index.rebuild(store);
         }
         else {
             try {
-                index.openSearcher(generation);
+                index.openSearcher(file);
             }
             catch {
                 // Missing or damaged. It is a cache, so build it again.
@@ -211,19 +225,20 @@ export class VectorIndex {
      * gives them no vector. */
     rebuild(store) {
         const { ids, flat } = allVectors(store, this.options.dim);
-        const next = (currentGeneration(store) ?? -1) + 1;
+        const current = currentIndexFile(store, this.basePath);
+        const next = (current ? generationOf(current) ?? -1 : -1) + 1;
         const file = generationPath(this.basePath, next);
         fs.mkdirSync(path.dirname(file), { recursive: true });
         addon().buildVectorIndex(toNative(this.options), Float64Array.from(ids), flat, file);
-        store.meta.putSync(VECTOR_GENERATION_KEY, String(next));
-        this.openSearcher(next);
-        sweepOtherGenerations(this.basePath, next);
+        store.meta.putSync(VECTOR_INDEX_FILE_KEY, path.basename(file));
+        this.openSearcher(file);
+        sweepOtherGenerations(store, this.basePath, file);
     }
-    openSearcher(generation) {
-        const next = addon().VectorSearcher.open(toNative(this.options), generationPath(this.basePath, generation));
+    openSearcher(file) {
+        const next = addon().VectorSearcher.open(toNative(this.options), file);
         this.searcher?.close();
         this.searcher = next;
-        this.opened = generation;
+        this.opened = file;
         this.rejected = null;
     }
     /** Switch to the generation the store names if it is not the one we have. A
@@ -236,7 +251,7 @@ export class VectorIndex {
     refresh() {
         if (!this.searcher)
             return;
-        const current = currentGeneration(this.store);
+        const current = currentIndexFile(this.store, this.basePath);
         if (current === undefined || current === this.opened || current === this.rejected)
             return;
         try {
@@ -246,12 +261,21 @@ export class VectorIndex {
             // Incompatible or damaged file: keep answering from the old graph.
             this.rejected = current;
             const reason = error instanceof Error ? error.message : String(error);
-            process.stderr.write(`starmemory: vector index generation ${current} cannot be opened (${reason}); still using generation ${this.opened}\n`);
+            process.stderr.write(`starmemory: vector index ${path.basename(current)} cannot be opened (${reason}); still using ${this.opened ? path.basename(this.opened) : 'nothing'}\n`);
         }
     }
     /** The file the current searcher was opened from. */
     get currentPath() {
-        return this.opened === null ? null : generationPath(this.basePath, this.opened);
+        return this.opened;
+    }
+    /** Unmap the index file. On Windows a mapped file cannot be deleted, so a
+     * process that is done with an index (a test tearing down, a CLI run about
+     * to exit) should close rather than wait for garbage collection. Idempotent;
+     * search() and size() answer empty afterwards. */
+    close() {
+        this.searcher?.close();
+        this.searcher = null;
+        this.opened = null;
     }
     /** Top-k by cosine similarity, optionally restricted to `filterIds`.
      *

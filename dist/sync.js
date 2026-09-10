@@ -4,6 +4,7 @@
 // app-level lock: LMDB's single-writer transaction is enforced by the engine
 // itself (flock), unlike episodic-memory's hand-rolled file-lock.ts.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { detectHarness, parseConversation, projectFromPath } from './parser.js';
 import { archivePathFor, copyIfChanged, defaultArchiveRoot } from './archive.js';
@@ -15,7 +16,8 @@ import { HARNESS_INDEX_KEY, exchangesFrom, insertExchangesForFile, putVector, re
  * harnesses themselves honour, so a profile that moved its config dir still
  * gets indexed. Missing directories are fine: walkJsonlFiles yields nothing. */
 export function defaultTranscriptDirs(env = process.env) {
-    const home = env.HOME ?? '';
+    // Windows sets USERPROFILE, not HOME; os.homedir() is the last word.
+    const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
     return [
         path.join(env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'), 'projects'),
         path.join(env.CODEX_HOME ?? path.join(home, '.codex'), 'sessions'),

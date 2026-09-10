@@ -12,6 +12,16 @@ import { VectorIndex } from '../src/vector-index.js';
 import { initEmbeddings } from '../src/embeddings.js';
 import { syncAll } from '../src/sync.js';
 
+/** Every VectorIndex opened here, closed in teardown: Windows cannot delete
+ * a file that is still mapped, so a leaked handle fails the cleanup. */
+const openedIndexes: VectorIndex[] = [];
+function openIndex(s: StoreHandle, p: string): VectorIndex {
+  const i = VectorIndex.open(s, p);
+  openedIndexes.push(i);
+  return i;
+}
+
+
 let dir: string;
 let store: StoreHandle;
 
@@ -36,14 +46,15 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('two syncs racing on one fresh store', () => {
   it('store each exchange exactly once', async () => {
     const transcripts = transcript(4);
-    const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
+    const index = openIndex(store, path.join(dir, 'index.usearch'));
 
     await Promise.all([
       syncAll(store, index, transcripts, undefined, { archiveRoot: path.join(dir, 'archive') }),

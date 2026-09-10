@@ -11,6 +11,16 @@ import { EMBEDDING_DIM, EMBEDDING_MODEL, initEmbeddings } from '../src/embedding
 import { ensureEmbeddingModel, EMBEDDING_MODEL_KEY } from '../src/sync.js';
 import { VectorIndex } from '../src/vector-index.js';
 
+/** Every VectorIndex opened here, closed in teardown: Windows cannot delete
+ * a file that is still mapped, so a leaked handle fails the cleanup. */
+const openedIndexes: VectorIndex[] = [];
+function openIndex(s: StoreHandle, p: string): VectorIndex {
+  const i = VectorIndex.open(s, p);
+  openedIndexes.push(i);
+  return i;
+}
+
+
 let store: StoreHandle;
 let dir: string;
 
@@ -45,8 +55,9 @@ beforeEach(() => {
   store = openStore(path.join(dir, 'store.mdb'));
 });
 afterEach(async () => {
+  for (const i of openedIndexes.splice(0)) i.close();
   await store.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe('ensureEmbeddingModel', () => {
@@ -102,7 +113,7 @@ describe('a stale store before migration', () => {
   it('yields no vectors of the wrong size, so the index cannot be built from garbage', () => {
     insertWithStaleVector(1);
 
-    const index = VectorIndex.open(store, path.join(dir, 'index.usearch'));
+    const index = openIndex(store, path.join(dir, 'index.usearch'));
 
     expect(index.size()).toBe(0);
   });
@@ -115,10 +126,10 @@ describe('syncAll', () => {
     const { syncAll } = await import('../src/sync.js');
     const emptyTranscripts = fs.mkdtempSync(path.join(os.tmpdir(), 'starmemory-no-transcripts-'));
 
-    const result = await syncAll(store, VectorIndex.open(store, path.join(dir, 'index.usearch')), emptyTranscripts, undefined, { archiveRoot: path.join(dir, 'archive') });
+    const result = await syncAll(store, openIndex(store, path.join(dir, 'index.usearch')), emptyTranscripts, undefined, { archiveRoot: path.join(dir, 'archive') });
 
     expect(result.reembedded).toBe(2);
-    fs.rmSync(emptyTranscripts, { recursive: true, force: true });
+    fs.rmSync(emptyTranscripts, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 });
 
@@ -131,7 +142,7 @@ describe('vector index generation', () => {
     const foreign = path.join(dir, 'index-v0.usearch');
     fs.writeFileSync(foreign, 'built by an addon with another on-disk layout');
 
-    const index = VectorIndex.open(store, base);
+    const index = openIndex(store, base);
 
     expect(index.size()).toBe(1);
     expect(fs.existsSync(currentIndexFile(store, base)!)).toBe(true);
@@ -143,12 +154,12 @@ describe('vector index generation', () => {
     insertWithStaleVector(1);
     await ensureEmbeddingModel(store);
     const base = path.join(dir, 'index.usearch');
-    VectorIndex.open(store, base);
+    openIndex(store, base);
     const file = currentIndexFile(store, base)!;
     const built = fs.statSync(file).mtimeMs;
     await new Promise((r) => setTimeout(r, 20));
 
-    VectorIndex.open(store, base);
+    openIndex(store, base);
 
     expect(fs.statSync(file).mtimeMs).toBe(built);
   });
