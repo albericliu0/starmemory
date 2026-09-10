@@ -10,7 +10,11 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 tantivy = "0.26"
 tantivy-jieba = "0.20"
-usearch = "2.26"
+# default-features = false drops numkong (usearch's SIMD kernels). Its build
+# script hard-fails on compilers that do not know the newest x86 flags, which
+# includes ubuntu-22.04's gcc, and at this corpus size the portable distance
+# code is not measurably slower. Design doc windows-support §05.
+usearch = { version = "2.26", default-features = false }
 heed = "0.22"
 serde_json = "1"
 napi = { version = "3", default-features = false, features = ["napi6"] }

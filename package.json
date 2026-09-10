@@ -10,8 +10,8 @@
   "scripts": {
     "build": "npm run build:native && tsc -p tsconfig.json",
     "test": "npm run test:native && vitest run",
-    "build:native": "cd native && PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --release && node -e \"const fs=require('fs');const p=process.platform;const lib=p==='win32'?'target/release/starmemory_native.dll':p==='darwin'?'target/release/libstarmemory_native.dylib':'target/release/libstarmemory_native.so';fs.copyFileSync(lib,'starmemory_native.'+p+'-'+process.arch+'.node')\"",
-    "test:native": "cd native && PATH=\"$HOME/.cargo/bin:$PATH\" cargo test",
+    "build:native": "node scripts/build-native.mjs",
+    "test:native": "cd native && cargo test",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
