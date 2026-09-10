@@ -96,7 +96,7 @@ export function unsupportedPlatformMessage(platform = process.platform, arch = p
   return [
     `starmemory ships prebuilt binaries for ${SUPPORTED_PLATFORMS.join(', ')}, but this machine is ${platformTag(platform, arch)}.`,
     'Nothing is broken -- this release just has no binaries for your platform yet.',
-    'To use it here, build the native addon from source (Rust toolchain needed) and then run `npm run build`:',
-    '  https://github.com/albericliu0/starmemory',
+    'To use it here, build the native addon from source (Rust toolchain needed): see "Build from source" in README.md,',
+    '  https://github.com/albericliu0/starmemory#build-from-source',
   ].join('\n');
 }

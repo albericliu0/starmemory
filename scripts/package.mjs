@@ -43,6 +43,6 @@ console.log(`  zip        ${zipPath}  (${mb(kb(zipPath))})`);
 console.log('');
 console.log('Install with either:');
 console.log(`  claude plugin marketplace add ${stageDir}`);
-console.log(`  claude plugin install starmemory@starmemory-marketplace -y`);
+console.log(`  claude plugin install starmemory -y`);
 console.log('or, without installing:');
 console.log(`  claude --plugin-dir ${zipPath}`);
