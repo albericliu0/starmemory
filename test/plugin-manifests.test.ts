@@ -72,3 +72,20 @@ describe('local Codex marketplace', () => {
     expect(m.plugins[0].source.url).toBe('./');
   });
 });
+
+// Design doc windows-support §08: Windows has no `sh`, so the node-finding
+// shim exists twice. The manifests still name the sh one; see the .cmd header.
+describe('Windows launcher', () => {
+  it('ships beside run-node.sh and searches the usual node homes', () => {
+    const cmd = fs.readFileSync(path.join(root, 'cli', 'run-node.cmd'), 'utf8');
+    expect(cmd).toContain('nodejs\\node.exe');
+    expect(cmd).toContain('NVM_SYMLINK');
+    expect(cmd).toContain('FNM_DIR');
+    expect(cmd).toContain('exit /b 127');
+  });
+
+  it('keeps the detached sync from opening a console window on Windows', () => {
+    const source = fs.readFileSync(path.join(root, 'cli', 'starmemory.mjs'), 'utf8');
+    expect(source).toContain('windowsHide: true');
+  });
+});

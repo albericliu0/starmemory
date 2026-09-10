@@ -37,7 +37,9 @@ if (background && !detached) {
   const child = spawn(
     process.execPath,
     [fileURLToPath(import.meta.url), ...args.filter((a) => a !== '--background'), '--detached'],
-    { detached: true, stdio: ['ignore', fd, fd] }
+    // windowsHide: a detached child on Windows would otherwise open a console
+    // window that flashes on every session start.
+    { detached: true, stdio: ['ignore', fd, fd], windowsHide: true }
   );
   child.unref();
   process.exit(0);
